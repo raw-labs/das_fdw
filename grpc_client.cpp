@@ -188,7 +188,13 @@ char* TableDefinitionToCreateTableSQL(const TableDefinition& definition, const c
 
 Datum ValueToDatum(const Value& value, Oid pgtyp, int32 pgtypmod)
 {
-    if (value.has_int_()) {
+    if (value.has_null()) {
+        return (Datum) 0;
+    } else if (value.has_byte()) {
+        return Int16GetDatum(value.byte().v());
+    } else if (value.has_short_()) {
+        return Int16GetDatum(value.short_().v());
+    } else if (value.has_int_()) {
         return Int32GetDatum(value.int_().v());
     } else if (value.has_long_()) {
         return Int64GetDatum(value.long_().v());
