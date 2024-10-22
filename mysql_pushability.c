@@ -26,16 +26,6 @@ static char *get_config_filename(void);
 static void config_invalid_error_callback(void *arg);
 static bool get_line_buf(FILE *stream, StringInfo buf);
 
-// /* Hash table for caching the configured pushdown objects */
-// static HTAB *pushability_hash = NULL;
-
-// /*
-//  * Memory context to hold the hash table, need to free incase of any error
-//  * while parsing the configuration file.
-//  */
-// static MemoryContext htab_ctx;
-
-
 /*
  * get_config_filename
  * 		Returns the path for the pushdown object configuration file for the
@@ -349,28 +339,3 @@ get_line_buf(FILE *stream, StringInfo buf)
 	/* No newline at EOF, but we did collect some data */
 	return true;
 }
-
-// /*
-//  * mysql_get_configured_pushdown_objects
-//  * 		Returns the hash table objects by sequentially scanning the hash table.
-//  */
-// List *
-// mysql_get_configured_pushdown_objects()
-// {
-// 	List	   *result = NIL;
-// 	HASH_SEQ_STATUS scan;
-// 	FDWPushdownObject *entry;
-// 	FDWPushdownObject *object;
-// 	Size		size = sizeof(FDWPushdownObject);
-// 	HTAB 	   *pushability_hash = populate_pushability_hash();
-
-// 	hash_seq_init(&scan, pushability_hash);
-// 	while ((entry = (FDWPushdownObject *) hash_seq_search(&scan)) != NULL)
-// 	{
-// 		object = (FDWPushdownObject *) palloc(size);
-// 		memcpy(object, entry, size);
-// 		result = lappend(result, object);
-// 	}
-
-// 	return result;
-// }

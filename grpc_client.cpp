@@ -71,9 +71,9 @@ TypeInfo GetTypeInfo(const Type& my_type) {
                 return { "text", true };
             return { "unknown", false };
         case Type::kByte:
-            return { "byte", my_type.byte().nullable() };
+            return { "smallint", my_type.byte().nullable() };
         case Type::kShort:
-            return { "short", my_type.short_().nullable() };
+            return { "smallint", my_type.short_().nullable() };
         case Type::kInt:
             return { "integer", my_type.int_().nullable() };
         case Type::kLong:
@@ -85,17 +85,19 @@ TypeInfo GetTypeInfo(const Type& my_type) {
         case Type::kDecimal:
             return { "decimal", my_type.decimal().nullable() };
         case Type::kString:
-            return { "varchar", my_type.string().nullable() };
+            return { "text", my_type.string().nullable() };
         case Type::kBool:
             return { "boolean", my_type.bool_().nullable() };
         case Type::kBinary:
-            return { "binary", my_type.binary().nullable() };
+            return { "bytea", my_type.binary().nullable() };
         case Type::kDate:
             return { "date", my_type.date().nullable() };
         case Type::kTime:
             return { "time", my_type.time().nullable() };
         case Type::kTimestamp:
             return { "timestamp", my_type.timestamp().nullable() };
+        case Type::kInterval:
+            return { "interval", my_type.interval().nullable() };            
         case Type::kRecord:
             return { "hstore", my_type.record().nullable() };
         case Type::kList:
@@ -140,6 +142,20 @@ std::string TypeToOperator(OperatorType type)
             return ">";
         case OperatorType::GREATER_THAN_OR_EQUAL:
             return ">=";
+        case OperatorType::LIKE:
+            return "~~";
+        case OperatorType::NOT_LIKE:
+            return "!~~";
+        case OperatorType::PLUS:
+            return "+";
+        case OperatorType::MINUS:
+            return "-";
+        case OperatorType::TIMES:
+            return "*";
+        case OperatorType::DIV:
+            return "/";
+        case OperatorType::MOD:
+            return "%";
         default:
             elog(ERROR, "Unsupported operator type: %d", type);
     }
@@ -348,11 +364,11 @@ char** get_operations_supported(mysql_opt* opts, bool* orderby_supported, bool* 
         bool first = true;
         for (const auto& param : function.parameters())
         {
-            function_str += TypeToStringForPushability(param);
             if (!first) 
             {
                 function_str += ",";
             }
+            function_str += TypeToStringForPushability(param);
             first = false;
         }
         function_str += ")";

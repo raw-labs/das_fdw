@@ -76,7 +76,7 @@ DLSUFFIX = .so
 endif
 
 # FDW objects
-OBJS = connection.o das_connection.o option.o deparse.o mysql_fdw.o mysql_pushability.o $(PROTO_OBJS) $(GRPC_CLIENT_OBJS)
+OBJS = das_connection.o option.o deparse.o mysql_fdw.o mysql_pushability.o $(PROTO_OBJS) $(GRPC_CLIENT_OBJS)
 
 # Specify that g++ should be used for linking C++ objects
 %.o: %.cpp
@@ -236,7 +236,7 @@ $(PROTO_DIR)/%.pb.o: $(PROTO_DIR)/%.pb.cc
 
 # PostgreSQL extension setup
 EXTENSION = mysql_fdw
-DATA = mysql_fdw.sql mysql_fdw_pushdown.config
+DATA = mysql_fdw--1.0.sql mysql_fdw_pushdown.config
 REGRESS = server_options connection_validation dml select pushdown join_pushdown aggregate_pushdown limit_offset_pushdown misc
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

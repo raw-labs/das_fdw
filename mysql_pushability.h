@@ -33,6 +33,5 @@ typedef struct FDWPushdownObject
 extern bool mysql_check_remote_pushability(HTAB *pushability_hash, Oid object_oid);
 extern HTAB *populate_pushability_hash();
 extern HTAB *populate_pushability_hash_from_list(MemoryContext htab_ctx, char **pushability_list, int pushability_len);
-// extern List * mysql_get_configured_pushdown_objects();
 
 #endif							/* MYSQL_PUSHABILITY_H */
