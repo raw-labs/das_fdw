@@ -38,7 +38,6 @@
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "mysql_pushability.h"
-#include "mysql_query.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/nodes.h"
