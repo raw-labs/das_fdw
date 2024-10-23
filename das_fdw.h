@@ -1,18 +1,18 @@
 /*-------------------------------------------------------------------------
  *
- * mysql_fdw.h
- * 		Foreign-data wrapper for remote MySQL servers
+ * das_fdw.h
+ * 		Foreign-data wrapper for remote DAS servers
  *
  * Portions Copyright (c) 2012-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 2004-2024, EnterpriseDB Corporation.
  *
  * IDENTIFICATION
- * 		mysql_fdw.h
+ * 		das_fdw.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef MYSQL_FDW_H
-#define MYSQL_FDW_H
+#ifndef das_FDW_H
+#define das_FDW_H
 
 #include "access/tupdesc.h"
 #include "fmgr.h"
@@ -25,9 +25,9 @@
 
 /* Macro for list API backporting. */
 #if PG_VERSION_NUM < 130000
-#define mysql_list_concat(l1, l2) list_concat(l1, list_copy(l2))
+#define das_list_concat(l1, l2) list_concat(l1, list_copy(l2))
 #else
-#define mysql_list_concat(l1, l2) list_concat((l1), (l2))
+#define das_list_concat(l1, l2) list_concat((l1), (l2))
 #endif
 
 /*
@@ -68,17 +68,17 @@ typedef struct
 	/* Values and null array for holding column values. */
 	Datum	   *values;
 	bool	   *nulls;
-} MySQLWRState;
+} DASWRState;
 
 /*
  * FDW-specific information for ForeignScanState
  * fdw_state.
  */
-typedef struct MySQLFdwExecState
+typedef struct DASFdwExecState
 {
  	/* Connection and query execution */
 	DAS 	  		 *das;
-	mysql_opt        *mysqlFdwOptions;/* MySQL FDW options */
+	das_opt        *dasFdwOptions;/* DAS FDW options */
     SqlQueryIterator *iterator;       /* Iterator for fetching rows */
     char             *query;          /* Query string */
     List             *retrieved_attrs;/* List of target attribute numbers */
@@ -96,7 +96,7 @@ typedef struct MySQLFdwExecState
     /* Whole-row reference handling */
     int               max_relid;      /* Maximum relation ID */
     Bitmapset        *relids;         /* Set of relation IDs involved in the scan */
-    MySQLWRState    **wr_states;      /* Whole-row construction information */
+    DASWRState    **wr_states;      /* Whole-row construction information */
     TupleDesc         wr_tupdesc;     /* Tuple descriptor for the result */
     Datum            *wr_values;      /* Array for holding column values */
     bool             *wr_nulls;       /* Array for holding null flags */
@@ -116,7 +116,7 @@ typedef struct MySQLFdwExecState
 									 * fetched from the foreign server.  The array
 									 * is indexed by the attribute numbers in the
 									 * ForeignScan. */
-	MySQLWRState    **mysqlwrstates;	/* whole-row construction information for
+	DASWRState    **daswrstates;	/* whole-row construction information for
 									 * each base relation involved in the
 									 * pushed down join. */
 	AttrNumber		  rowidAttno;		/* attnum of resjunk rowid column */
@@ -125,9 +125,9 @@ typedef struct MySQLFdwExecState
 
 	uint64	     	  plan_id; /* unique identifier for this plan */
 
-} MySQLFdwExecState;
+} DASFdwExecState;
 
-typedef struct MySQLFdwRelationInfo
+typedef struct DASFdwRelationInfo
 {
 	/*
 	 * True means that the relation can be pushed down. Always true for simple
@@ -163,41 +163,41 @@ typedef struct MySQLFdwRelationInfo
 	/* Upper relation information */
 	UpperRelationKind stage;
 
-	/* MySQL FDW options */
-	mysql_opt  *options;
+	/* DAS FDW options */
+	das_opt  *options;
 
 	DAS 	  *das;
 
 	uint64	   	plan_id; /* unique identifier for this plan */
 
-} MySQLFdwRelationInfo;
+} DASFdwRelationInfo;
 
 
-/* MySQL Column List */
-typedef struct MySQLColumn
+/* DAS Column List */
+typedef struct DASColumn
 {
 	int			attnum;			/* Attribute number */
 	char	   *attname;		/* Attribute name */
 	int			atttype;		/* Attribute type */
-} MySQLColumn;
+} DASColumn;
 
 /* option.c headers */
-extern bool mysql_is_valid_option(const char *option, Oid context);
-extern mysql_opt *mysql_get_options(Oid foreigntableid, bool is_foreigntable);
+extern bool das_is_valid_option(const char *option, Oid context);
+extern das_opt *das_get_options(Oid foreigntableid, bool is_foreigntable);
 
 /* depare.c headers */
-extern void mysql_deparse_insert(StringInfo buf, PlannerInfo *root,
+extern void das_deparse_insert(StringInfo buf, PlannerInfo *root,
 								 Index rtindex, Relation rel,
 								 List *targetAttrs, bool doNothing);
-extern void mysql_deparse_update(StringInfo buf, PlannerInfo *root,
+extern void das_deparse_update(StringInfo buf, PlannerInfo *root,
 								 Index rtindex, Relation rel,
 								 List *targetAttrs, char *attname);
-extern void mysql_deparse_delete(StringInfo buf, PlannerInfo *root,
+extern void das_deparse_delete(StringInfo buf, PlannerInfo *root,
 								 Index rtindex, Relation rel, char *name);
-extern void mysql_deparse_analyze(StringInfo buf, char *dbname, char *relname);
-extern bool mysql_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel,
+extern void das_deparse_analyze(StringInfo buf, char *dbname, char *relname);
+extern bool das_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel,
 								  Expr *expr, bool is_remote_cond);
-extern void mysql_deparse_select_stmt_for_rel(StringInfo buf,
+extern void das_deparse_select_stmt_for_rel(StringInfo buf,
 											  PlannerInfo *root,
 											  RelOptInfo *rel, List *tlist,
 											  List *remote_conds,
@@ -206,38 +206,31 @@ extern void mysql_deparse_select_stmt_for_rel(StringInfo buf,
 											  bool has_limit,
 											  List **retrieved_attrs,
 											  List **params_list);
-extern const char *mysql_get_jointype_name(JoinType jointype);
-extern bool mysql_is_foreign_param(PlannerInfo *root, RelOptInfo *baserel,
+extern const char *das_get_jointype_name(JoinType jointype);
+extern bool das_is_foreign_param(PlannerInfo *root, RelOptInfo *baserel,
 								   Expr *expr);
-extern bool mysql_is_foreign_pathkey(PlannerInfo *root, RelOptInfo *baserel,
+extern bool das_is_foreign_pathkey(PlannerInfo *root, RelOptInfo *baserel,
 									 PathKey *pathkey);
-extern char *mysql_get_sortby_direction_string(EquivalenceMember *em,
+extern char *das_get_sortby_direction_string(EquivalenceMember *em,
 											   PathKey *pathkey,
 											   HTAB* pushability_hash);
-extern EquivalenceMember *mysql_find_em_for_rel(PlannerInfo *root,
+extern EquivalenceMember *das_find_em_for_rel(PlannerInfo *root,
 												EquivalenceClass *ec,
 												RelOptInfo *rel);
-extern EquivalenceMember *mysql_find_em_for_rel_target(PlannerInfo *root,
+extern EquivalenceMember *das_find_em_for_rel_target(PlannerInfo *root,
 													   EquivalenceClass *ec,
 													   RelOptInfo *rel);
-extern bool mysql_is_builtin(Oid objectId);
+extern bool das_is_builtin(Oid objectId);
 #if PG_VERSION_NUM >= 140000
-extern void mysql_deparse_truncate_sql(StringInfo buf, Relation rel);
+extern void das_deparse_truncate_sql(StringInfo buf, Relation rel);
 #endif
-extern char *mysql_quote_identifier(const char *str, char quotechar);
-
-/* connection.c headers */
-// MYSQL *mysql_get_connection(ForeignServer *server, UserMapping *user,
-// 							mysql_opt *opt);
-// MYSQL *mysql_fdw_connect(mysql_opt *opt);
-// void mysql_cleanup_connection(void);
-// void mysql_release_connection(MYSQL *conn);
+extern char *das_quote_identifier(const char *str, char quotechar);
 
 /* das_connection.c headers */
 DAS *das_get_connection(ForeignServer *server, UserMapping *user,
-							mysql_opt *opt);
-DAS *das_fdw_connect(mysql_opt *opt);
+							das_opt *opt);
+DAS *das_fdw_connect(das_opt *opt);
 void das_cleanup_connection(void);
 void das_release_connection(DAS *conn);
 
-#endif							/* MYSQL_FDW_H */
+#endif							/* das_FDW_H */

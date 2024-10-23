@@ -1,10 +1,10 @@
-# mysql_fdw/Makefile
+# das_fdw/Makefile
 #
 # Portions Copyright (c) 2012-2014, PostgreSQL Global Development Group
 # Portions Copyright (c) 2004-2024, EnterpriseDB Corporation.
 #
 
-MODULE_big = mysql_fdw
+MODULE_big = das_fdw
 
 # Versions of the protobuf
 RAW_VERSION = v0.39.0
@@ -62,8 +62,8 @@ PG_CPPFLAGS += -I$(PROTO_DIR)
 PG_CXXFLAGS += --std=c++17 $(shell pkg-config --cflags grpc++) $(shell pkg-config --cflags protobuf) -I$(shell pg_config --cppflags) -I$(shell pg_config --includedir-server) -I$(PROTO_DIR)
 SHLIB_LINK += $(shell pkg-config --libs grpc++ grpc protobuf) -L$(shell pg_config --pkglibdir) $(shell pg_config --ldflags) $(shell pg_config --libs)
 
-# # MySQL settings
-# PG_CPPFLAGS += $(shell mysql_config --include)
+# # DAS settings
+# PG_CPPFLAGS += $(shell das_config --include)
 
 # MacOS?
 SHLIB_LINK += -lc++
@@ -76,7 +76,7 @@ DLSUFFIX = .so
 endif
 
 # FDW objects
-OBJS = das_connection.o option.o deparse.o mysql_fdw.o mysql_pushability.o $(PROTO_OBJS) $(GRPC_CLIENT_OBJS)
+OBJS = das_connection.o option.o deparse.o das_fdw.o das_pushability.o $(PROTO_OBJS) $(GRPC_CLIENT_OBJS)
 
 # Specify that g++ should be used for linking C++ objects
 %.o: %.cpp
@@ -235,8 +235,8 @@ $(PROTO_DIR)/%.pb.o: $(PROTO_DIR)/%.pb.cc
 	g++ $(PG_CXXFLAGS) -fPIC -c -I$(PROTO_DIR) -o $@ $<
 
 # PostgreSQL extension setup
-EXTENSION = mysql_fdw
-DATA = mysql_fdw--1.0.sql mysql_fdw_pushdown.config
+EXTENSION = das_fdw
+DATA = das_fdw--1.0.sql das_fdw_pushdown.config
 REGRESS = server_options connection_validation dml select pushdown join_pushdown aggregate_pushdown limit_offset_pushdown misc
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
@@ -250,7 +250,7 @@ endif
 
 # Clean rule to remove generated files
 clean:
-	rm -f $(OBJS) mysql_fdw.so $(PROTO_DIR)/**/*.pb.cc $(PROTO_DIR)/**/*.pb.h
+	rm -f $(OBJS) das_fdw.so $(PROTO_DIR)/**/*.pb.cc $(PROTO_DIR)/**/*.pb.h
 	rm -rf $(PROTO_DIR)
 
 # Phony targets

@@ -1,16 +1,16 @@
 /*-------------------------------------------------------------------------
  *
- * mysql_pushability.h
- *		prototypes for mysql_pushability.c
+ * das_pushability.h
+ *		prototypes for das_pushability.c
  *
  * Portions Copyright (c) 2022-2024, EnterpriseDB Corporation.
  *
  * IDENTIFICATION
- *		mysql_pushability.h
+ *		das_pushability.h
  *-------------------------------------------------------------------------
  */
-#ifndef MYSQL_PUSHABILITY_H
-#define MYSQL_PUSHABILITY_H
+#ifndef das_PUSHABILITY_H
+#define das_PUSHABILITY_H
 
 #include "nodes/parsenodes.h"
 #include "nodes/pg_list.h"
@@ -21,7 +21,7 @@
  * of FDW contrib module. Otherwise, the pushdown object configuration file will
  * not be located correctly.
  */
-#define FDW_MODULE_NAME "mysql_fdw"
+#define FDW_MODULE_NAME "das_fdw"
 
 /* Structure to help hold the pushdown object in the hash table */
 typedef struct FDWPushdownObject
@@ -30,8 +30,8 @@ typedef struct FDWPushdownObject
 	ObjectType	objectType;
 } FDWPushdownObject;
 
-extern bool mysql_check_remote_pushability(HTAB *pushability_hash, Oid object_oid);
+extern bool das_check_remote_pushability(HTAB *pushability_hash, Oid object_oid);
 extern HTAB *populate_pushability_hash();
 extern HTAB *populate_pushability_hash_from_list(MemoryContext htab_ctx, char **pushability_list, int pushability_len);
 
-#endif							/* MYSQL_PUSHABILITY_H */
+#endif							/* das_PUSHABILITY_H */

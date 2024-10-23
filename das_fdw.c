@@ -1,23 +1,23 @@
 /*-------------------------------------------------------------------------
  *
- * mysql_fdw.c
- * 		Foreign-data wrapper for remote MySQL servers
+ * das_fdw.c
+ * 		Foreign-data wrapper for remote DAS servers
  *
  * Portions Copyright (c) 2012-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 2004-2024, EnterpriseDB Corporation.
  *
  * IDENTIFICATION
- * 		mysql_fdw.c
+ * 		das_fdw.c
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
 /*
- * Must be included before mysql.h as it has some conflicting definitions like
+ * Must be included before das.h as it has some conflicting definitions like
  * list_length, etc.
  */
-#include "mysql_fdw.h"
+#include "das_fdw.h"
 
 // #include "pg_query.h"
 
@@ -37,7 +37,7 @@
 #include "catalog/pg_type.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
-#include "mysql_pushability.h"
+#include "das_pushability.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/nodes.h"
@@ -79,44 +79,44 @@ PG_MODULE_MAGIC;
  * an in-memory sort on those many rows wouldn't cost noticeably higher than
  * the underlying scan. Hence for now, cost sorts same as underlying scans.
  */
-#define DEFAULT_MYSQL_SORT_MULTIPLIER 1
+#define DEFAULT_das_SORT_MULTIPLIER 1
 
 
 /*
  * Indexes of FDW-private information stored in fdw_private lists.
  *
- * These items are indexed with the enum mysqlFdwScanPrivateIndex, so an item
+ * These items are indexed with the enum dasFdwScanPrivateIndex, so an item
  * can be fetched with list_nth().  For example, to get the SELECT statement:
- *		sql = strVal(list_nth(fdw_private, mysqlFdwScanPrivateSelectSql));
+ *		sql = strVal(list_nth(fdw_private, dasFdwScanPrivateSelectSql));
  */
-enum mysqlFdwScanPrivateIndex
+enum dasFdwScanPrivateIndex
 {
 	/* SQL statement to execute remotely (as a String node) */
-	mysqlFdwScanPrivateSelectSql,
+	dasFdwScanPrivateSelectSql,
 
 	/* Integer list of attribute numbers retrieved by the SELECT */
-	mysqlFdwScanPrivateRetrievedAttrs,
+	dasFdwScanPrivateRetrievedAttrs,
 
 	/* Unique identifier for the query plan */
-	mysqlFdwScanPrivateUniquePlanId,
+	dasFdwScanPrivateUniquePlanId,
 
 	/*
 	 * String describing join i.e. names of relations being joined and types
 	 * of join, added when the scan is join
 	 */
-	mysqlFdwScanPrivateRelations,
+	dasFdwScanPrivateRelations,
 
 	/*
 	 * List of Var node lists for constructing the whole-row references of
 	 * base relations involved in pushed down join.
 	 */
-	mysqlFdwPrivateWholeRowLists,
+	dasFdwPrivateWholeRowLists,
 
 	/*
 	 * Targetlist representing the result fetched from the foreign server if
 	 * whole-row references are involved.
 	 */
-	mysqlFdwPrivateScanTList
+	dasFdwPrivateScanTList
 };
 
 /*
@@ -135,11 +135,11 @@ enum FdwPathPrivateIndex
 };
 
 extern PGDLLEXPORT void _PG_init(void);
-extern Datum mysql_fdw_handler(PG_FUNCTION_ARGS);
+extern Datum das_fdw_handler(PG_FUNCTION_ARGS);
 
-PG_FUNCTION_INFO_V1(mysql_fdw_handler);
-PG_FUNCTION_INFO_V1(mysql_fdw_version);
-// PG_FUNCTION_INFO_V1(mysql_display_pushdown_list);
+PG_FUNCTION_INFO_V1(das_fdw_handler);
+PG_FUNCTION_INFO_V1(das_fdw_version);
+// PG_FUNCTION_INFO_V1(das_display_pushdown_list);
 
 /* Global query counter */
 static pg_atomic_uint64 global_query_counter;
@@ -150,86 +150,86 @@ static int fdw_instance_pid;
 /*
  * FDW callback routines
  */
-// static void mysqlExplainForeignScan(ForeignScanState *node, ExplainState *es);
-static void mysqlBeginForeignScan(ForeignScanState *node, int eflags);
-static TupleTableSlot *mysqlIterateForeignScan(ForeignScanState *node);
-static void mysqlReScanForeignScan(ForeignScanState *node);
-static void mysqlEndForeignScan(ForeignScanState *node);
+// static void dasExplainForeignScan(ForeignScanState *node, ExplainState *es);
+static void dasBeginForeignScan(ForeignScanState *node, int eflags);
+static TupleTableSlot *dasIterateForeignScan(ForeignScanState *node);
+static void dasReScanForeignScan(ForeignScanState *node);
+static void dasEndForeignScan(ForeignScanState *node);
 
-static List *mysqlPlanForeignModify(PlannerInfo *root, ModifyTable *plan,
+static List *dasPlanForeignModify(PlannerInfo *root, ModifyTable *plan,
 									Index resultRelation, int subplan_index);
-static void mysqlBeginForeignModify(ModifyTableState *mtstate,
+static void dasBeginForeignModify(ModifyTableState *mtstate,
 									ResultRelInfo *resultRelInfo,
 									List *fdw_private, int subplan_index,
 									int eflags);
-static TupleTableSlot *mysqlExecForeignInsert(EState *estate,
+static TupleTableSlot *dasExecForeignInsert(EState *estate,
 											  ResultRelInfo *resultRelInfo,
 											  TupleTableSlot *slot,
 											  TupleTableSlot *planSlot);
 #if PG_VERSION_NUM >= 140000
-static void mysqlAddForeignUpdateTargets(PlannerInfo *root,
+static void dasAddForeignUpdateTargets(PlannerInfo *root,
 										 Index rtindex,
 										 RangeTblEntry *target_rte,
 										 Relation target_relation);
 #else
-static void mysqlAddForeignUpdateTargets(Query *parsetree,
+static void dasAddForeignUpdateTargets(Query *parsetree,
 										 RangeTblEntry *target_rte,
 										 Relation target_relation);
 #endif
-static TupleTableSlot *mysqlExecForeignUpdate(EState *estate,
+static TupleTableSlot *dasExecForeignUpdate(EState *estate,
 											  ResultRelInfo *resultRelInfo,
 											  TupleTableSlot *slot,
 											  TupleTableSlot *planSlot);
-static TupleTableSlot *mysqlExecForeignDelete(EState *estate,
+static TupleTableSlot *dasExecForeignDelete(EState *estate,
 											  ResultRelInfo *resultRelInfo,
 											  TupleTableSlot *slot,
 											  TupleTableSlot *planSlot);
-static void mysqlEndForeignModify(EState *estate,
+static void dasEndForeignModify(EState *estate,
 								  ResultRelInfo *resultRelInfo);
 
-static void mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
+static void dasGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 								   Oid foreigntableid);
-static void mysqlGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
+static void dasGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 								 Oid foreigntableid);
-// static bool mysqlAnalyzeForeignTable(Relation relation,
+// static bool dasAnalyzeForeignTable(Relation relation,
 // 									 AcquireSampleRowsFunc *func,
 // 									 BlockNumber *totalpages);
-static ForeignScan *mysqlGetForeignPlan(PlannerInfo *root,
+static ForeignScan *dasGetForeignPlan(PlannerInfo *root,
 										RelOptInfo *foreignrel,
 										Oid foreigntableid,
 										ForeignPath *best_path, List *tlist,
 										List *scan_clauses, Plan *outer_plan);
-static void mysqlEstimateCosts(PlannerInfo *root, RelOptInfo *baserel,
+static void dasEstimateCosts(PlannerInfo *root, RelOptInfo *baserel,
 							   Cost *startup_cost, Cost *total_cost,
 							   Oid foreigntableid);
-static void mysqlGetForeignJoinPaths(PlannerInfo *root,
+static void dasGetForeignJoinPaths(PlannerInfo *root,
 									 RelOptInfo *joinrel,
 									 RelOptInfo *outerrel,
 									 RelOptInfo *innerrel,
 									 JoinType jointype,
 									 JoinPathExtraData *extra);
-static bool mysqlRecheckForeignScan(ForeignScanState *node,
+static bool dasRecheckForeignScan(ForeignScanState *node,
 									TupleTableSlot *slot);
 
-static void mysqlGetForeignUpperPaths(PlannerInfo *root,
+static void dasGetForeignUpperPaths(PlannerInfo *root,
 									  UpperRelationKind stage,
 									  RelOptInfo *input_rel,
 									  RelOptInfo *output_rel,
 									  void *extra);
-static List *mysqlImportForeignSchema(ImportForeignSchemaStmt *stmt,
+static List *dasImportForeignSchema(ImportForeignSchemaStmt *stmt,
 									  Oid serverOid);
 
-static void mysqlBeginForeignInsert(ModifyTableState *mtstate,
+static void dasBeginForeignInsert(ModifyTableState *mtstate,
 									ResultRelInfo *resultRelInfo);
-static void mysqlEndForeignInsert(EState *estate,
+static void dasEndForeignInsert(EState *estate,
 								  ResultRelInfo *resultRelInfo);
 
 /*
  * Helper functions
  */
-// bool mysql_load_library(void);
-static void mysql_fdw_exit(int code, Datum arg);
-// static bool mysql_is_column_unique(Oid foreigntableid);
+// bool das_load_library(void);
+static void das_fdw_exit(int code, Datum arg);
+// static bool das_is_column_unique(Oid foreigntableid);
 
 static void prepare_query_params(PlanState *node,
 								 List *fdw_exprs,
@@ -238,68 +238,68 @@ static void prepare_query_params(PlanState *node,
 								 List **param_exprs,
 								 const char ***param_values,
 								 Oid **param_types);
-static bool mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
+static bool das_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 								  JoinType jointype, RelOptInfo *outerrel,
 								  RelOptInfo *innerrel,
 								  JoinPathExtraData *extra);
-static List *mysql_adjust_whole_row_ref(PlannerInfo *root,
+static List *das_adjust_whole_row_ref(PlannerInfo *root,
 										List *scan_var_list,
 										List **whole_row_lists,
 										Bitmapset *relids);
-static List *mysql_build_scan_list_for_baserel(Oid relid, Index varno,
+static List *das_build_scan_list_for_baserel(Oid relid, Index varno,
 											   Bitmapset *attrs_used,
 											   List **retrieved_attrs);
-static void mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
+static void das_build_whole_row_constr_info(DASFdwExecState *festate,
 											  TupleDesc tupdesc,
 											  Bitmapset *relids,
 											  int max_relid,
 											  List *whole_row_lists,
 											  List *scan_tlist,
 											  List *fdw_scan_tlist);
-static HeapTuple mysql_get_tuple_with_whole_row(MySQLFdwExecState *festate,
+static HeapTuple das_get_tuple_with_whole_row(DASFdwExecState *festate,
 												Datum *values, bool *nulls);
-static HeapTuple mysql_form_whole_row(MySQLWRState *wr_state, Datum *values,
+static HeapTuple das_form_whole_row(DASWRState *wr_state, Datum *values,
 									  bool *nulls);
-static bool mysql_foreign_grouping_ok(PlannerInfo *root,
+static bool das_foreign_grouping_ok(PlannerInfo *root,
 									  RelOptInfo *grouped_rel,
 									  Node *havingQual);
-static void mysql_add_foreign_grouping_paths(PlannerInfo *root,
+static void das_add_foreign_grouping_paths(PlannerInfo *root,
 											 RelOptInfo *input_rel,
 											 RelOptInfo *grouped_rel,
 											 GroupPathExtraData *extra);
-static List *mysql_get_useful_ecs_for_relation(PlannerInfo *root,
+static List *das_get_useful_ecs_for_relation(PlannerInfo *root,
 											   RelOptInfo *rel);
-static List *mysql_get_useful_pathkeys_for_relation(PlannerInfo *root,
+static List *das_get_useful_pathkeys_for_relation(PlannerInfo *root,
 													RelOptInfo *rel);
 #if PG_VERSION_NUM >= 170000
-static void mysql_add_paths_with_pathkeys(PlannerInfo *root,
+static void das_add_paths_with_pathkeys(PlannerInfo *root,
 										  RelOptInfo *rel,
 										  Path *epq_path,
 										  Cost base_startup_cost,
 										  Cost base_total_cost,
 										  List *restrictlist);
 #else
-static void mysql_add_paths_with_pathkeys(PlannerInfo *root,
+static void das_add_paths_with_pathkeys(PlannerInfo *root,
 										  RelOptInfo *rel,
 										  Path *epq_path,
 										  Cost base_startup_cost,
 										  Cost base_total_cost);
 #endif
-static void mysql_add_foreign_ordered_paths(PlannerInfo *root,
+static void das_add_foreign_ordered_paths(PlannerInfo *root,
 											RelOptInfo *input_rel,
 											RelOptInfo *ordered_rel);
-static void mysql_add_foreign_final_paths(PlannerInfo *root,
+static void das_add_foreign_final_paths(PlannerInfo *root,
 										  RelOptInfo *input_rel,
 										  RelOptInfo *final_rel,
 										  FinalPathExtraData *extra);
 #if PG_VERSION_NUM >= 160000
-static TargetEntry *mysql_tlist_member_match_var(Var *var, List *targetlist);
-static List *mysql_varlist_append_unique_var(List *varlist, Var *var);
+static TargetEntry *das_tlist_member_match_var(Var *var, List *targetlist);
+static List *das_varlist_append_unique_var(List *varlist, Var *var);
 #endif
 
 static List *getUpdateTargetAttrs(PlannerInfo *root, RangeTblEntry *rte, int unique_attnum);
 #if PG_VERSION_NUM >= 140000
-static char *mysql_remove_quotes(char *s1);
+static char *das_remove_quotes(char *s1);
 #endif
 
 /*
@@ -315,18 +315,18 @@ _PG_init(void)
 	/* Initialize the unique identifier for this FDW instance */
 	fdw_instance_pid = MyProcPid;
 
-	on_proc_exit(&mysql_fdw_exit, PointerGetDatum(NULL));
+	on_proc_exit(&das_fdw_exit, PointerGetDatum(NULL));
 }
 
 /*
- * mysql_fdw_exit
+ * das_fdw_exit
  * 		Exit callback function.
  */
 static void
-mysql_fdw_exit(int code, Datum arg)
+das_fdw_exit(int code, Datum arg)
 {
 	// TODO (msb): Clean/close connections?
-	// mysql_cleanup_connection();
+	// das_cleanup_connection();
 }
 
 /*
@@ -334,49 +334,49 @@ mysql_fdw_exit(int code, Datum arg)
  * a struct with pointers to my callback routines.
  */
 Datum
-mysql_fdw_handler(PG_FUNCTION_ARGS)
+das_fdw_handler(PG_FUNCTION_ARGS)
 {
 	FdwRoutine *fdwroutine = makeNode(FdwRoutine);
 
 	/* Functions for scanning foreign tables */
-	fdwroutine->GetForeignRelSize = mysqlGetForeignRelSize;
-	fdwroutine->GetForeignPaths = mysqlGetForeignPaths;
-	fdwroutine->GetForeignPlan = mysqlGetForeignPlan;
-	fdwroutine->BeginForeignScan = mysqlBeginForeignScan;
-	fdwroutine->IterateForeignScan = mysqlIterateForeignScan;
-	fdwroutine->ReScanForeignScan = mysqlReScanForeignScan;
-	fdwroutine->EndForeignScan = mysqlEndForeignScan;
+	fdwroutine->GetForeignRelSize = dasGetForeignRelSize;
+	fdwroutine->GetForeignPaths = dasGetForeignPaths;
+	fdwroutine->GetForeignPlan = dasGetForeignPlan;
+	fdwroutine->BeginForeignScan = dasBeginForeignScan;
+	fdwroutine->IterateForeignScan = dasIterateForeignScan;
+	fdwroutine->ReScanForeignScan = dasReScanForeignScan;
+	fdwroutine->EndForeignScan = dasEndForeignScan;
 
 	/* Functions for updating foreign tables */
-	fdwroutine->AddForeignUpdateTargets = mysqlAddForeignUpdateTargets;
-	fdwroutine->PlanForeignModify = mysqlPlanForeignModify;
-	fdwroutine->BeginForeignModify = mysqlBeginForeignModify;
-	fdwroutine->ExecForeignInsert = mysqlExecForeignInsert;
-	fdwroutine->ExecForeignUpdate = mysqlExecForeignUpdate;
-	fdwroutine->ExecForeignDelete = mysqlExecForeignDelete;
-	fdwroutine->EndForeignModify = mysqlEndForeignModify;
+	fdwroutine->AddForeignUpdateTargets = dasAddForeignUpdateTargets;
+	fdwroutine->PlanForeignModify = dasPlanForeignModify;
+	fdwroutine->BeginForeignModify = dasBeginForeignModify;
+	fdwroutine->ExecForeignInsert = dasExecForeignInsert;
+	fdwroutine->ExecForeignUpdate = dasExecForeignUpdate;
+	fdwroutine->ExecForeignDelete = dasExecForeignDelete;
+	fdwroutine->EndForeignModify = dasEndForeignModify;
 
 	/* Function for EvalPlanQual rechecks */
-	fdwroutine->RecheckForeignScan = mysqlRecheckForeignScan;
+	fdwroutine->RecheckForeignScan = dasRecheckForeignScan;
 
 	/* Support functions for EXPLAIN */
-	// fdwroutine->ExplainForeignScan = mysqlExplainForeignScan;
+	// fdwroutine->ExplainForeignScan = dasExplainForeignScan;
 
 	// /* Support functions for ANALYZE */
-	// fdwroutine->AnalyzeForeignTable = mysqlAnalyzeForeignTable;
+	// fdwroutine->AnalyzeForeignTable = dasAnalyzeForeignTable;
 
 	/* Support functions for IMPORT FOREIGN SCHEMA */
-	fdwroutine->ImportForeignSchema = mysqlImportForeignSchema;
+	fdwroutine->ImportForeignSchema = dasImportForeignSchema;
 
 	/* Partition routing and/or COPY from */
-	fdwroutine->BeginForeignInsert = mysqlBeginForeignInsert;
-	fdwroutine->EndForeignInsert = mysqlEndForeignInsert;
+	fdwroutine->BeginForeignInsert = dasBeginForeignInsert;
+	fdwroutine->EndForeignInsert = dasEndForeignInsert;
 
 	/* Support functions for join push-down */
-	fdwroutine->GetForeignJoinPaths = mysqlGetForeignJoinPaths;
+	fdwroutine->GetForeignJoinPaths = dasGetForeignJoinPaths;
 
 	/* Support functions for upper relation push-down */
-	fdwroutine->GetForeignUpperPaths = mysqlGetForeignUpperPaths;
+	fdwroutine->GetForeignUpperPaths = dasGetForeignUpperPaths;
 
 	PG_RETURN_POINTER(fdwroutine);
 }
@@ -426,17 +426,17 @@ build_colname_to_attnum_map(TupleDesc tupleDesc)
 }
 
 /*
- * mysqlBeginForeignScan
+ * dasBeginForeignScan
  *      Initiate access to the database, including handling of joins and GROUP BY pushdowns.
  */
 static void
-mysqlBeginForeignScan(ForeignScanState *node, int eflags)
+dasBeginForeignScan(ForeignScanState *node, int eflags)
 {
-    MySQLFdwExecState  *festate;
+    DASFdwExecState  *festate;
     EState     		   *estate = node->ss.ps.state;
     ForeignScan 	   *fsplan = (ForeignScan *) node->ss.ps.plan;
     RangeTblEntry 	   *rte;
-    mysql_opt  		   *options;
+    das_opt  		   *options;
     Oid         		userid;
     ForeignServer 	   *server;
     UserMapping 	   *user;
@@ -450,27 +450,27 @@ mysqlBeginForeignScan(ForeignScanState *node, int eflags)
 	int 				bindnum = 0;
 	char				unique_plan_id[64];
 
-    elog(DEBUG1, "mysqlBeginForeignScan: Begin");
+    elog(DEBUG1, "dasBeginForeignScan: Begin");
 
     /*
-     * Allocate and initialize MySQLFdwExecState.
+     * Allocate and initialize DASFdwExecState.
      */
-    festate = (MySQLFdwExecState *) palloc0(sizeof(MySQLFdwExecState));
+    festate = (DASFdwExecState *) palloc0(sizeof(DASFdwExecState));
     node->fdw_state = (void *) festate;
 
 	/*
 	 * If whole-row references are involved in pushed down join extract the
 	 * information required to construct those.
 	 */
-	if (list_length(fdw_private) >= mysqlFdwPrivateScanTList)
+	if (list_length(fdw_private) >= dasFdwPrivateScanTList)
 	{
 		List	   *whole_row_lists = list_nth(fdw_private,
-											   mysqlFdwPrivateWholeRowLists);
+											   dasFdwPrivateWholeRowLists);
 		List	   *scan_tlist = list_nth(fdw_private,
-										  mysqlFdwPrivateScanTList);
+										  dasFdwPrivateScanTList);
 		TupleDesc	scan_tupdesc = ExecTypeFromTL(scan_tlist);
 
-		mysql_build_whole_row_constr_info(festate, tupleDescriptor,
+		das_build_whole_row_constr_info(festate, tupleDescriptor,
 										  fsplan->fs_relids,
 										  list_length(node->ss.ps.state->es_range_table),
 										  whole_row_lists, scan_tlist,
@@ -506,25 +506,25 @@ mysqlBeginForeignScan(ForeignScanState *node, int eflags)
     user = GetUserMapping(userid, server->serverid);
 
     /* Fetch the options. */
-    options = mysql_get_options(rte->relid, true);
+    options = das_get_options(rte->relid, true);
 
     /* Establish connection to DAS (Data Access Service). */
     festate->das = das_get_connection(server, user, options);
 
     /* Stash away the state info we have already. */
     festate->query = strVal(list_nth(fsplan->fdw_private,
-                                     mysqlFdwScanPrivateSelectSql));
+                                     dasFdwScanPrivateSelectSql));
     festate->retrieved_attrs = list_nth(fsplan->fdw_private,
-                                        mysqlFdwScanPrivateRetrievedAttrs);
-	festate->plan_id = DatumGetInt64(((Const *) list_nth(fsplan->fdw_private, mysqlFdwScanPrivateUniquePlanId))->constvalue);
+                                        dasFdwScanPrivateRetrievedAttrs);
+	festate->plan_id = DatumGetInt64(((Const *) list_nth(fsplan->fdw_private, dasFdwScanPrivateUniquePlanId))->constvalue);
 	elog(WARNING, "got here4.3  with plan_id = %lu", festate->plan_id);											   
     festate->attinmeta = TupleDescGetAttInMetadata(tupleDescriptor);
     // festate->temp_cxt = AllocSetContextCreate(estate->es_query_cxt,
-    //                                           "mysql_fdw temporary data",
+    //                                           "das_fdw temporary data",
     //                                           ALLOCSET_DEFAULT_SIZES);
 
     /* Prepare and send the remote SQL query. */
-    char *remote_sql_query = mysql_remove_quotes(pstrdup(festate->query));
+    char *remote_sql_query = das_remove_quotes(pstrdup(festate->query));
     elog(WARNING, "About to send query: %s", remote_sql_query);
 
     /* Initialize the iterator. */
@@ -565,7 +565,7 @@ mysqlBeginForeignScan(ForeignScanState *node, int eflags)
 		bindnum++;
 	}
 
-	elog(WARNING, "End of mysqlBeginForeignScan");
+	elog(WARNING, "End of dasBeginForeignScan");
 }
 
 /*
@@ -597,13 +597,13 @@ static void LogTupleDescDetails(TupleDesc tupdesc) {
 }
 
 /*
- * mysqlIterateForeignScan
- *      Iterate and get the rows one by one from MySQL, handling joins and GROUP BY pushdowns.
+ * dasIterateForeignScan
+ *      Iterate and get the rows one by one from DAS, handling joins and GROUP BY pushdowns.
  */
 static TupleTableSlot *
-mysqlIterateForeignScan(ForeignScanState *node)
+dasIterateForeignScan(ForeignScanState *node)
 {
-    MySQLFdwExecState *festate = (MySQLFdwExecState *) node->fdw_state;
+    DASFdwExecState *festate = (DASFdwExecState *) node->fdw_state;
     TupleTableSlot  *tupleSlot = node->ss.ss_ScanTupleSlot;
     Datum           *dvalues;
     bool            *nulls;
@@ -633,12 +633,12 @@ mysqlIterateForeignScan(ForeignScanState *node)
     {
         elog(WARNING, "Record found");
 
-		if (list_length(fdw_private) >= mysqlFdwPrivateScanTList)
+		if (list_length(fdw_private) >= dasFdwPrivateScanTList)
 		{
 			elog(WARNING, "Whole-row references are involved in pushed down join");
 
 			/* Construct tuple with whole-row references. */
-			tup = mysql_get_tuple_with_whole_row(festate, dvalues, nulls);
+			tup = das_get_tuple_with_whole_row(festate, dvalues, nulls);
 		}
 		else
 		{
@@ -679,13 +679,13 @@ mysqlIterateForeignScan(ForeignScanState *node)
 }
 
 /*
- * mysqlEndForeignScan
+ * dasEndForeignScan
  *      Finish scanning foreign table and dispose of objects used for this scan
  */
 static void
-mysqlEndForeignScan(ForeignScanState *node)
+dasEndForeignScan(ForeignScanState *node)
 {
-    MySQLFdwExecState *festate = (MySQLFdwExecState *) node->fdw_state;
+    DASFdwExecState *festate = (DASFdwExecState *) node->fdw_state;
 
     elog(WARNING, "EndForeignScan begin");
 
@@ -704,39 +704,39 @@ mysqlEndForeignScan(ForeignScanState *node)
 
 
 /*
- * mysqlReScanForeignScan
+ * dasReScanForeignScan
  * 		Rescan table, possibly with new parameters
  */
 static void
-mysqlReScanForeignScan(ForeignScanState *node)
+dasReScanForeignScan(ForeignScanState *node)
 {
-	MySQLFdwExecState *festate = (MySQLFdwExecState *) node->fdw_state;
+	DASFdwExecState *festate = (DASFdwExecState *) node->fdw_state;
 
 	/*
 	 * Set the query_executed flag to false so that the query will be executed
-	 * in mysqlIterateForeignScan().
+	 * in dasIterateForeignScan().
 	 */
 	// festate->query_executed = false;
 
 }
 
 /*
- * mysqlGetForeignRelSize
+ * dasGetForeignRelSize
  * 		Create a FdwPlan for a scan on the foreign table
  */
 static void
-mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
+dasGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 					   Oid foreigntableid)
 {
 	double		rows;
 	double		width;
 	Bitmapset  *attrs_used = NULL;
-	// mysql_opt  *options;
+	// das_opt  *options;
 	Oid			userid = GetUserId();
 	ForeignServer *server;
 	UserMapping *user;
 	ForeignTable *table;
-	MySQLFdwRelationInfo *fpinfo;
+	DASFdwRelationInfo *fpinfo;
 	ListCell   *lc;
 	RangeTblEntry *rte = planner_rt_fetch(baserel->relid, root);
 	const char *database;
@@ -745,7 +745,7 @@ mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 	StringInfoData sql;
 	List	   *retrieved_attrs = NULL;
 
-	fpinfo = (MySQLFdwRelationInfo *) palloc0(sizeof(MySQLFdwRelationInfo));
+	fpinfo = (DASFdwRelationInfo *) palloc0(sizeof(DASFdwRelationInfo));
 	baserel->fdw_private = (void *) fpinfo;
 
 	/* Base foreign tables need to be push down always. */
@@ -758,14 +758,14 @@ mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 	elog(WARNING, "got here1");
 
 	/* Fetch options */
-	fpinfo->options = mysql_get_options(foreigntableid, true);
+	fpinfo->options = das_get_options(foreigntableid, true);
 
 	elog(WARNING, "got here2");
 	elog(WARNING, "das_url = %s", fpinfo->options->das_url);
 	elog(WARNING, "das_id = %s", fpinfo->options->das_id);
 	elog(WARNING, "das_type = %s", fpinfo->options->das_type);
 	/* Connect to the server */
-	// conn = mysql_get_connection(server, user, options);
+	// conn = das_get_connection(server, user, options);
 	fpinfo->das = das_get_connection(server, user, fpinfo->options);
 
 	elog(WARNING, "got here3");
@@ -777,7 +777,7 @@ mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 	{
 		RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
 
-		if (mysql_is_foreign_expr(root, baserel, ri->clause, false))
+		if (das_is_foreign_expr(root, baserel, ri->clause, false))
 			fpinfo->remote_conds = lappend(fpinfo->remote_conds, ri);
 		else
 			fpinfo->local_conds = lappend(fpinfo->local_conds, ri);
@@ -797,7 +797,7 @@ mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 
 	initStringInfo(&sql);
 
-	mysql_deparse_select_stmt_for_rel(&sql, root, baserel, NULL,
+	das_deparse_select_stmt_for_rel(&sql, root, baserel, NULL,
 										fpinfo->remote_conds, NULL, false,
 										false, &retrieved_attrs, NULL);
 
@@ -836,11 +836,11 @@ mysqlGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 }
 
 /*
- * mysqlEstimateCosts
+ * dasEstimateCosts
  * 		Estimate the remote query cost
  */
 static void
-mysqlEstimateCosts(PlannerInfo *root, RelOptInfo *baserel, Cost *startup_cost,
+dasEstimateCosts(PlannerInfo *root, RelOptInfo *baserel, Cost *startup_cost,
 				   Cost *total_cost, Oid foreigntableid)
 {
 	*startup_cost = 25;
@@ -849,11 +849,11 @@ mysqlEstimateCosts(PlannerInfo *root, RelOptInfo *baserel, Cost *startup_cost,
 }
 
 /*
- * mysqlGetForeignPaths
+ * dasGetForeignPaths
  * 		Get the foreign paths
  */
 static void
-mysqlGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
+dasGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 					 Oid foreigntableid)
 {
 	Cost		startup_cost;
@@ -863,7 +863,7 @@ mysqlGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 	elog(WARNING, "getPaths here1");
 
 	// /* Estimate costs */
-	mysqlEstimateCosts(root, baserel, &startup_cost, &total_cost,
+	dasEstimateCosts(root, baserel, &startup_cost, &total_cost,
 					   foreigntableid);
 
 					   elog(WARNING, "getPaths here1.1");
@@ -896,15 +896,15 @@ mysqlGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 
 elog(WARNING, "getPaths here1.2");
 
-	das = ((MySQLFdwRelationInfo *) baserel->fdw_private)->das;
+	das = ((DASFdwRelationInfo *) baserel->fdw_private)->das;
 
 	if (das->orderby_supported) {
 		/* Add paths with pathkeys */
 #if PG_VERSION_NUM >= 170000
-		mysql_add_paths_with_pathkeys(root, baserel, NULL, startup_cost,
+		das_add_paths_with_pathkeys(root, baserel, NULL, startup_cost,
 									  total_cost, NIL);
 #else
-		mysql_add_paths_with_pathkeys(root, baserel, NULL, startup_cost,
+		das_add_paths_with_pathkeys(root, baserel, NULL, startup_cost,
 									  total_cost);
 #endif
 	}
@@ -914,15 +914,15 @@ elog(WARNING, "getPaths here1.2");
 
 
 /*
- * mysqlGetForeignPlan
+ * dasGetForeignPlan
  * 		Get a foreign scan plan node
  */
 static ForeignScan *
-mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
+dasGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 					Oid foreigntableid, ForeignPath *best_path,
 					List *tlist, List *scan_clauses, Plan *outer_plan)
 {
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) foreignrel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) foreignrel->fdw_private;
 	Index		scan_relid;
 	List	   *fdw_private;
 	List	   *local_exprs = NIL;
@@ -939,7 +939,7 @@ mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 
 	elog(WARNING, "plan here1");
 	/*
-	 * Get FDW private data created by mysqlGetForeignUpperPaths(), if any.
+	 * Get FDW private data created by dasGetForeignUpperPaths(), if any.
 	 */
 	if (best_path->fdw_private)
 	{
@@ -990,7 +990,7 @@ mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 			remote_conds = lappend(remote_conds, rinfo);
 		else if (list_member_ptr(fpinfo->local_conds, rinfo))
 			local_exprs = lappend(local_exprs, rinfo->clause);
-		else if (mysql_is_foreign_expr(root, foreignrel, rinfo->clause, false))
+		else if (das_is_foreign_expr(root, foreignrel, rinfo->clause, false))
 			remote_conds = lappend(remote_conds, rinfo);
 		else
 			local_exprs = lappend(local_exprs, rinfo->clause);
@@ -1044,7 +1044,7 @@ mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 		fdw_scan_tlist = add_to_flat_tlist(NIL, scan_var_list);
 
 		/*
-		 * MySQL does not allow row value constructors to be part of SELECT
+		 * DAS does not allow row value constructors to be part of SELECT
 		 * list.  Hence, whole row reference in join relations need to be
 		 * constructed by combining all the attributes of required base
 		 * relations into a tuple after fetching the result from the foreign
@@ -1053,7 +1053,7 @@ mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 		 * node lists required to construct the whole-row references of the
 		 * involved relations.
 		 */
-		scan_var_list = mysql_adjust_whole_row_ref(root, scan_var_list,
+		scan_var_list = das_adjust_whole_row_ref(root, scan_var_list,
 												   &whole_row_lists,
 												   foreignrel->relids);
 
@@ -1117,7 +1117,7 @@ mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 	 * expressions to be sent as parameters.
 	 */
 	initStringInfo(&sql);
-	mysql_deparse_select_stmt_for_rel(&sql, root, foreignrel, scan_var_list,
+	das_deparse_select_stmt_for_rel(&sql, root, foreignrel, scan_var_list,
 									  remote_conds, best_path->path.pathkeys,
 									  has_final_sort, has_limit, &retrieved_attrs,
 									  &params_list);
@@ -1168,7 +1168,7 @@ mysqlGetForeignPlan(PlannerInfo *root, RelOptInfo *foreignrel,
 }
 
 static List *
-mysqlPlanForeignModify(PlannerInfo *root,
+dasPlanForeignModify(PlannerInfo *root,
 					   ModifyTable *plan,
 					   Index resultRelation,
 					   int subplan_index)
@@ -1181,7 +1181,7 @@ mysqlPlanForeignModify(PlannerInfo *root,
 	bool		doNothing = false;
 	char	   *attname;
 	int			attnum;
-	mysql_opt  *options;
+	das_opt  *options;
 
 	elog(WARNING, "planForeignModify begin");
 
@@ -1197,7 +1197,7 @@ mysqlPlanForeignModify(PlannerInfo *root,
 
 	foreignTableId = RelationGetRelid(rel);
 
-	options = mysql_get_options(foreignTableId, true);
+	options = das_get_options(foreignTableId, true);
 	attname = unique_column(options, get_rel_name(foreignTableId));
 	attnum = get_attnum(foreignTableId, attname);
 
@@ -1277,17 +1277,17 @@ mysqlPlanForeignModify(PlannerInfo *root,
 }
 
 /*
- * mysqlBeginForeignModify
+ * dasBeginForeignModify
  * 		Begin an insert/update/delete operation on a foreign table
  */
 static void
-mysqlBeginForeignModify(ModifyTableState *mtstate,
+dasBeginForeignModify(ModifyTableState *mtstate,
 						ResultRelInfo *resultRelInfo,
 						List *fdw_private,
 						int subplan_index,
 						int eflags)
 {
-	MySQLFdwExecState *fmstate;
+	DASFdwExecState *fmstate;
 	EState	   *estate = mtstate->ps.state;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	AttrNumber	n_params;
@@ -1305,7 +1305,7 @@ mysqlBeginForeignModify(ModifyTableState *mtstate,
 	RangeTblEntry *rte;
 #endif
 
-	elog(WARNING, "mysqlBeginForeignModify begin");
+	elog(WARNING, "dasBeginForeignModify begin");
 
 #if PG_VERSION_NUM >= 160000
 	userid = fsplan->checkAsUser ? fsplan->checkAsUser : GetUserId();
@@ -1327,28 +1327,28 @@ mysqlBeginForeignModify(ModifyTableState *mtstate,
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
 		return;
 
-	/* Begin constructing MySQLFdwExecState. */
-	fmstate = (MySQLFdwExecState *) palloc0(sizeof(MySQLFdwExecState));
+	/* Begin constructing DASFdwExecState. */
+	fmstate = (DASFdwExecState *) palloc0(sizeof(DASFdwExecState));
 
-	elog(WARNING, "mysqlBeginForeignModify 1");
+	elog(WARNING, "dasBeginForeignModify 1");
 
-	fmstate->mysqlFdwOptions = mysql_get_options(foreignTableId, true);
+	fmstate->dasFdwOptions = das_get_options(foreignTableId, true);
 
 	fmstate->attname = (char *) list_nth(fdw_private, 0); // strVal(list_nth(fdw_private, 0));
 	fmstate->retrieved_attrs = (List *) list_nth(fdw_private, 1);
 
 	fmstate->table_name = get_rel_name(foreignTableId);
 
-	elog(WARNING, "mysqlBeginForeignModify 2");
+	elog(WARNING, "dasBeginForeignModify 2");
 
 	n_params = list_length(fmstate->retrieved_attrs) + 1;
 	fmstate->p_flinfo = (FmgrInfo *) palloc0(sizeof(FmgrInfo) * n_params);
 	fmstate->p_nums = 0;
 	fmstate->temp_cxt = AllocSetContextCreate(estate->es_query_cxt,
-											  "mysql_fdw temporary data",
+											  "das_fdw temporary data",
 											  ALLOCSET_DEFAULT_SIZES);
 
-	elog(WARNING, "mysqlBeginForeignModify 3");
+	elog(WARNING, "dasBeginForeignModify 3");
 
 	if (mtstate->operation == CMD_UPDATE)
 	{
@@ -1362,8 +1362,8 @@ mysqlBeginForeignModify(ModifyTableState *mtstate,
 
 		Assert(subplan != NULL);
 
-		elog(WARNING, "mysqlBeginForeignModify 3.1");
-		elog(WARNING, "mysqlBeginForeignModify fmstate attname: %s", fmstate->attname);
+		elog(WARNING, "dasBeginForeignModify 3.1");
+		elog(WARNING, "dasBeginForeignModify fmstate attname: %s", fmstate->attname);
 
 		/* Find the rowid resjunk column in the subplan's result */
 		fmstate->rowidAttno = ExecFindJunkAttributeInTlist(subplan->targetlist,
@@ -1372,7 +1372,7 @@ mysqlBeginForeignModify(ModifyTableState *mtstate,
 			elog(ERROR, "could not find junk row identifier column");
 	}
 
-	elog(WARNING, "mysqlBeginForeignModify 4");
+	elog(WARNING, "dasBeginForeignModify 4");
 
 	/* Set up for remaining transmittable parameters */
 	foreach(lc, fmstate->retrieved_attrs)
@@ -1389,26 +1389,26 @@ mysqlBeginForeignModify(ModifyTableState *mtstate,
 	}
 	Assert(fmstate->p_nums <= n_params);
 
-	elog(WARNING, "mysqlBeginForeignModify 5");
+	elog(WARNING, "dasBeginForeignModify 5");
 
 	n_params = list_length(fmstate->retrieved_attrs);
 
 	resultRelInfo->ri_FdwState = fmstate;
 
-	elog(WARNING, "mysqlBeginForeignModify end");
+	elog(WARNING, "dasBeginForeignModify end");
 }
 
 /*
- * mysqlExecForeignInsert
+ * dasExecForeignInsert
  * 		Insert one row into a foreign table
  */
 static TupleTableSlot *
-mysqlExecForeignInsert(EState *estate,
+dasExecForeignInsert(EState *estate,
 					   ResultRelInfo *resultRelInfo,
 					   TupleTableSlot *slot,
 					   TupleTableSlot *planSlot)
 {
-	MySQLFdwExecState *fmstate;
+	DASFdwExecState *fmstate;
 	ListCell   *lc;
 	int			n_params;
 	MemoryContext oldcontext;
@@ -1422,12 +1422,12 @@ mysqlExecForeignInsert(EState *estate,
 	int32	   *pgtypmods;
 	int 		bindnum = 0;
 
-	elog(WARNING, "mysqlExecForeignInsert begin");
+	elog(WARNING, "dasExecForeignInsert begin");
 
-	fmstate = (MySQLFdwExecState *) resultRelInfo->ri_FdwState;
+	fmstate = (DASFdwExecState *) resultRelInfo->ri_FdwState;
 	n_params = list_length(fmstate->retrieved_attrs);
 
-	fmstate->mysqlFdwOptions = mysql_get_options(foreignTableId, true);
+	fmstate->dasFdwOptions = das_get_options(foreignTableId, true);
 
 	oldcontext = MemoryContextSwitchTo(fmstate->temp_cxt);
 
@@ -1458,25 +1458,25 @@ mysqlExecForeignInsert(EState *estate,
 		bindnum++;
 	}
 
-	elog(WARNING, "mysqlExecForeignInsert 1 num_columns: %d", bindnum);
+	elog(WARNING, "dasExecForeignInsert 1 num_columns: %d", bindnum);
 
-	insert_row(fmstate->mysqlFdwOptions, fmstate->table_name, bindnum, attnums, attnames, values, nulls, pgtypes, pgtypmods);
+	insert_row(fmstate->dasFdwOptions, fmstate->table_name, bindnum, attnums, attnames, values, nulls, pgtypes, pgtypmods);
 
 	MemoryContextSwitchTo(oldcontext);
 	MemoryContextReset(fmstate->temp_cxt);
 
-	elog(WARNING, "mysqlExecForeignInsert end");
+	elog(WARNING, "dasExecForeignInsert end");
 
 	return slot;
 }
 
 static TupleTableSlot *
-mysqlExecForeignUpdate(EState *estate,
+dasExecForeignUpdate(EState *estate,
 					   ResultRelInfo *resultRelInfo,
 					   TupleTableSlot *slot,
 					   TupleTableSlot *planSlot)
 {
-	MySQLFdwExecState *fmstate = (MySQLFdwExecState *) resultRelInfo->ri_FdwState;
+	DASFdwExecState *fmstate = (DASFdwExecState *) resultRelInfo->ri_FdwState;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	
 	int		   *attnums;
@@ -1551,7 +1551,7 @@ mysqlExecForeignUpdate(EState *estate,
 		typmod = attr->atttypmod;
 		value = slot_getattr(slot, attnum + 1, &nulls[bindnum]);
 
-		// mysql_bind_sql_var(type, bindnum, value, mysql_bind_buffer,
+		// das_bind_sql_var(type, bindnum, value, das_bind_buffer,
 		// 				   &isnull[bindnum]);
 
 		attnums[bindnum] = attnum;
@@ -1623,7 +1623,7 @@ mysqlExecForeignUpdate(EState *estate,
 	ReleaseSysCache(tuple);
 
 	update_row(
-		fmstate->mysqlFdwOptions, fmstate->table_name,
+		fmstate->dasFdwOptions, fmstate->table_name,
 		new_value, new_pgtype, new_pgtypmod,
 	 	bindnum, attnums, attnames, values, nulls, pgtypes, pgtypmods
 	);
@@ -1634,20 +1634,20 @@ mysqlExecForeignUpdate(EState *estate,
 }
 
 /*
- * mysqlAddForeignUpdateTargets
+ * dasAddForeignUpdateTargets
  * 		Add column(s) needed for update/delete on a foreign table, we are
  * 		using first column as row identification column, so we are adding
  * 		that into target list.
  */
 #if PG_VERSION_NUM >= 140000
 static void
-mysqlAddForeignUpdateTargets(PlannerInfo *root,
+dasAddForeignUpdateTargets(PlannerInfo *root,
 							 Index rtindex,
 							 RangeTblEntry *target_rte,
 							 Relation target_relation)
 #else
 static void
-mysqlAddForeignUpdateTargets(Query *parsetree,
+dasAddForeignUpdateTargets(Query *parsetree,
 							 RangeTblEntry *target_rte,
 							 Relation target_relation)
 #endif
@@ -1656,15 +1656,15 @@ mysqlAddForeignUpdateTargets(Query *parsetree,
 	const char *attrname;
 	int			attnum;
 	char	   *attname; // (msb): I think this is the same as attrname, but I'm resolving it again
-	mysql_opt  *options;
+	das_opt  *options;
 	Oid 		foreignTableId = RelationGetRelid(target_relation);
 #if PG_VERSION_NUM < 140000
 	TargetEntry *tle;
 #endif
 
-	elog(WARNING, "mysqlAddForeignUpdateTargets begin");
+	elog(WARNING, "dasAddForeignUpdateTargets begin");
 
-	options = mysql_get_options(foreignTableId, true);
+	options = das_get_options(foreignTableId, true);
 	attname = unique_column(options, get_rel_name(foreignTableId));
 	attnum = get_attnum(foreignTableId, attname);
 
@@ -1702,7 +1702,7 @@ mysqlAddForeignUpdateTargets(Query *parsetree,
 	parsetree->targetList = lappend(parsetree->targetList, tle);
 #endif
 
-	elog(WARNING, "mysqlAddForeignUpdateTargets end");
+	elog(WARNING, "dasAddForeignUpdateTargets end");
 }
 
 int32 get_attribute_typmod(Oid foreignTableId, AttrNumber unique_attnum)
@@ -1736,18 +1736,18 @@ int32 get_attribute_typmod(Oid foreignTableId, AttrNumber unique_attnum)
 }
 
 /*
- * mysqlExecForeignDelete
+ * dasExecForeignDelete
  * 		Delete one row from a foreign table
  */
 static TupleTableSlot *
-mysqlExecForeignDelete(EState *estate,
+dasExecForeignDelete(EState *estate,
 					   ResultRelInfo *resultRelInfo,
 					   TupleTableSlot *slot,
 					   TupleTableSlot *planSlot)
 {
-	MySQLFdwExecState *fmstate = (MySQLFdwExecState *) resultRelInfo->ri_FdwState;
+	DASFdwExecState *fmstate = (DASFdwExecState *) resultRelInfo->ri_FdwState;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
-	// MYSQL_BIND *mysql_bind_buffer;
+	// das_BIND *das_bind_buffer;
 	Oid			foreignTableId = RelationGetRelid(rel);
 	bool		is_null = false;
 	Oid			typeoid;
@@ -1757,7 +1757,7 @@ mysqlExecForeignDelete(EState *estate,
 
 	unique_attnum = get_attnum(foreignTableId, fmstate->attname);
 
-	// mysql_bind_buffer = (MYSQL_BIND *) palloc(sizeof(MYSQL_BIND));
+	// das_bind_buffer = (das_BIND *) palloc(sizeof(das_BIND));
 
 	/* Get the id that was passed up as a resjunk column */
 	value = ExecGetJunkAttribute(planSlot, unique_attnum, &is_null);
@@ -1766,27 +1766,27 @@ mysqlExecForeignDelete(EState *estate,
 
 	elog(WARNING, "is_null: %d value: %d", is_null, DatumGetInt32(value));
 
-	delete_row(fmstate->mysqlFdwOptions, fmstate->table_name, value, typeoid, typemod);
+	delete_row(fmstate->dasFdwOptions, fmstate->table_name, value, typeoid, typemod);
 
 	/* Return NULL if nothing was updated on the remote end */
 	return slot;
 }
 
 /*
- * mysqlEndForeignModify
+ * dasEndForeignModify
  *		Finish an insert/update/delete operation on a foreign table
  */
 static void
-mysqlEndForeignModify(EState *estate, ResultRelInfo *resultRelInfo)
+dasEndForeignModify(EState *estate, ResultRelInfo *resultRelInfo)
 {
 }
 
 /*
- * mysqlImportForeignSchema
+ * dasImportForeignSchema
  * 		Import a foreign schema (9.5+)
  */
 static List *
-mysqlImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
+dasImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 {
 	List	   *commands = NIL;
 	bool		import_default = false;
@@ -1794,7 +1794,7 @@ mysqlImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 	bool		import_enum_as_text = false;
 	ForeignServer *server;
 	UserMapping *user;
-	mysql_opt  *options;
+	das_opt  *options;
 	DAS *das;
 	StringInfoData buf;
 	ListCell   *lc;
@@ -1811,7 +1811,7 @@ mysqlImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 
 	elog(WARNING, "starting1");
 	/* Fetch the options. */
-    options = mysql_get_options(serverOid, false);
+    options = das_get_options(serverOid, false);
 	elog(WARNING, "starting2");
 
 	/* If DAS ID is not defined, first register it. */
@@ -1845,8 +1845,8 @@ mysqlImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
     // das = das_get_connection(server, user, options);
 	elog(WARNING, "starting3");
 
-	// options = mysql_get_options(serverOid, false);
-	// conn = mysql_get_connection(server, user, options);
+	// options = das_get_options(serverOid, false);
+	// conn = das_get_connection(server, user, options);
 
 	/* Create workspace for strings */
 	initStringInfo(&buf);
@@ -1870,34 +1870,34 @@ mysqlImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 }
 
 /*
- * mysqlBeginForeignInsert
+ * dasBeginForeignInsert
  * 		Prepare for an insert operation triggered by partition routing
  * 		or COPY FROM.
  *
  * This is not yet supported, so raise an error.
  */
 static void
-mysqlBeginForeignInsert(ModifyTableState *mtstate,
+dasBeginForeignInsert(ModifyTableState *mtstate,
 						ResultRelInfo *resultRelInfo)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
-			 errmsg("COPY and foreign partition routing not supported in mysql_fdw")));
+			 errmsg("COPY and foreign partition routing not supported in das_fdw")));
 }
 
 /*
- * mysqlEndForeignInsert
+ * dasEndForeignInsert
  * 		BeginForeignInsert() is not yet implemented, hence we do not
  * 		have anything to cleanup as of now. We throw an error here just
  * 		to make sure when we do that we do not forget to cleanup
  * 		resources.
  */
 static void
-mysqlEndForeignInsert(EState *estate, ResultRelInfo *resultRelInfo)
+dasEndForeignInsert(EState *estate, ResultRelInfo *resultRelInfo)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
-			 errmsg("COPY and foreign partition routing not supported in mysql_fdw")));
+			 errmsg("COPY and foreign partition routing not supported in das_fdw")));
 }
 
 /*
@@ -1951,7 +1951,7 @@ prepare_query_params(PlanState *node,
 }
 
 Datum
-mysql_fdw_version(PG_FUNCTION_ARGS)
+das_fdw_version(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(CODE_VERSION);
 }
@@ -2003,15 +2003,15 @@ getUpdateTargetAttrs(PlannerInfo *root, RangeTblEntry *rte, int unique_attnum)
 }
 
 /*
- * mysqlGetForeignJoinPaths
+ * dasGetForeignJoinPaths
  *		Add possible ForeignPath to joinrel, if join is safe to push down.
  */
 static void
-mysqlGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
+dasGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 						 RelOptInfo *outerrel, RelOptInfo *innerrel,
 						 JoinType jointype, JoinPathExtraData *extra)
 {
-	MySQLFdwRelationInfo *fpinfo;
+	DASFdwRelationInfo *fpinfo;
 	ForeignPath *joinpath;
 	Cost		startup_cost;
 	Cost		total_cost;
@@ -2027,26 +2027,26 @@ mysqlGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 		return;
 
 	/*
-	 * Create unfinished MySQLFdwRelationInfo entry which is used to indicate
+	 * Create unfinished DASFdwRelationInfo entry which is used to indicate
 	 * that the join relation is already considered, so that we won't waste
 	 * time in judging safety of join pushdown and adding the same paths again
 	 * if found safe.  Once we know that this join can be pushed down, we fill
 	 * the entry.
 	 */
-	fpinfo = (MySQLFdwRelationInfo *) palloc0(sizeof(MySQLFdwRelationInfo));
+	fpinfo = (DASFdwRelationInfo *) palloc0(sizeof(DASFdwRelationInfo));
 	fpinfo->pushdown_safe = false;
 	joinrel->fdw_private = fpinfo;
 	/* attrs_used is only for base relations. */
 	fpinfo->attrs_used = NULL;
 	elog(WARNING, "join here1.1");
 	// what tthis is a CLEAR LOOP :-) It's borken
-	fpinfo->options = ((MySQLFdwRelationInfo *) outerrel->fdw_private)->options;
+	fpinfo->options = ((DASFdwRelationInfo *) outerrel->fdw_private)->options;
 	elog(WARNING, "join here1.2");
 	elog(WARNING, "das_url: %s", fpinfo->options->das_url);
 
 //yeah this needs to re-read.
 
-	fpinfo->das = ((MySQLFdwRelationInfo *) outerrel->fdw_private)->das;
+	fpinfo->das = ((DASFdwRelationInfo *) outerrel->fdw_private)->das;
 	elog(WARNING, "join here1.3");
 
 	elog(WARNING, "join supported: %d", fpinfo->das->join_supported);
@@ -2067,7 +2067,7 @@ mysqlGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 	 * not push the join to the foreign server since we won't be able to
 	 * reconstruct the row for EvalPlanQual().  Find an alternative local path
 	 * before we add ForeignPath, lest the new path would kick possibly the
-	 * only local path.  Do this before calling mysql_foreign_join_ok(), since
+	 * only local path.  Do this before calling das_foreign_join_ok(), since
 	 * that function updates fpinfo and marks it as pushable if the join is
 	 * found to be pushable.
 	 */
@@ -2087,7 +2087,7 @@ mysqlGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 
 	elog(WARNING, "join here3");
 
-	if (!mysql_foreign_join_ok(root, joinrel, jointype, outerrel, innerrel,
+	if (!das_foreign_join_ok(root, joinrel, jointype, outerrel, innerrel,
 							   extra))
 	{
 		/* Free path required for EPQ if we copied one; we don't need it now */
@@ -2139,10 +2139,10 @@ mysqlGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 	if (fpinfo->das->orderby_supported) {
 		/* Add paths with pathkeys */
 #if PG_VERSION_NUM >= 170000
-		mysql_add_paths_with_pathkeys(root, joinrel, epq_path, startup_cost,
+		das_add_paths_with_pathkeys(root, joinrel, epq_path, startup_cost,
 									  total_cost, extra->restrictlist);
 #else
-		mysql_add_paths_with_pathkeys(root, joinrel, epq_path, startup_cost,
+		das_add_paths_with_pathkeys(root, joinrel, epq_path, startup_cost,
 									  total_cost);
 #endif
 	}
@@ -2150,21 +2150,21 @@ mysqlGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 }
 
 /*
- * mysql_foreign_join_ok
+ * das_foreign_join_ok
  * 		Assess whether the join between inner and outer relations can be
  * 		pushed down to the foreign server.
  *
  * As a side effect, save information we obtain in this function to
- * MySQLFdwRelationInfo passed in.
+ * DASFdwRelationInfo passed in.
  */
 static bool
-mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
+das_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 					  JoinType jointype, RelOptInfo *outerrel,
 					  RelOptInfo *innerrel, JoinPathExtraData *extra)
 {
-	MySQLFdwRelationInfo *fpinfo;
-	MySQLFdwRelationInfo *fpinfo_o;
-	MySQLFdwRelationInfo *fpinfo_i;
+	DASFdwRelationInfo *fpinfo;
+	DASFdwRelationInfo *fpinfo_o;
+	DASFdwRelationInfo *fpinfo_i;
 	ListCell   *lc;
 	List	   *joinclauses;
 
@@ -2181,9 +2181,9 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 	 * If either of the joining relations is marked as unsafe to pushdown, the
 	 * join cannot be pushed down.
 	 */
-	fpinfo = (MySQLFdwRelationInfo *) joinrel->fdw_private;
-	fpinfo_o = (MySQLFdwRelationInfo *) outerrel->fdw_private;
-	fpinfo_i = (MySQLFdwRelationInfo *) innerrel->fdw_private;
+	fpinfo = (DASFdwRelationInfo *) joinrel->fdw_private;
+	fpinfo_o = (DASFdwRelationInfo *) outerrel->fdw_private;
+	fpinfo_i = (DASFdwRelationInfo *) innerrel->fdw_private;
 	if (!fpinfo_o || !fpinfo_o->pushdown_safe ||
 		!fpinfo_i || !fpinfo_i->pushdown_safe)
 		return false;
@@ -2215,7 +2215,7 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 	foreach(lc, extra->restrictlist)
 	{
 		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
-		bool		is_remote_clause = mysql_is_foreign_expr(root, joinrel,
+		bool		is_remote_clause = das_is_foreign_expr(root, joinrel,
 															 rinfo->clause,
 															 true);
 
@@ -2250,12 +2250,12 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 	}
 
 	/*
-	 * mysqlDeparseExplicitTargetList() isn't smart enough to handle anything
+	 * dasDeparseExplicitTargetList() isn't smart enough to handle anything
 	 * other than a Var.  In particular, if there's some PlaceHolderVar that
 	 * would need to be evaluated within this join tree (because there's an
 	 * upper reference to a quantity that may go to NULL as a result of an
 	 * outer join), then we can't try to push the join down because we'll fail
-	 * when we get to mysqlDeparseExplicitTargetList().  However, a
+	 * when we get to dasDeparseExplicitTargetList().  However, a
 	 * PlaceHolderVar that needs to be evaluated *at the top* of this join
 	 * tree is OK, because we can do that locally after fetching the results
 	 * from the remote side.
@@ -2294,9 +2294,9 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 	switch (jointype)
 	{
 		case JOIN_INNER:
-			fpinfo->remote_conds = mysql_list_concat(fpinfo->remote_conds,
+			fpinfo->remote_conds = das_list_concat(fpinfo->remote_conds,
 													 fpinfo_i->remote_conds);
-			fpinfo->remote_conds = mysql_list_concat(fpinfo->remote_conds,
+			fpinfo->remote_conds = das_list_concat(fpinfo->remote_conds,
 													 fpinfo_o->remote_conds);
 			break;
 
@@ -2306,13 +2306,13 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 			{
 				RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
 
-				if (!mysql_is_foreign_expr(root, joinrel, ri->clause, true))
+				if (!das_is_foreign_expr(root, joinrel, ri->clause, true))
 					return false;
 			}
 
-			fpinfo->joinclauses = mysql_list_concat(fpinfo->joinclauses,
+			fpinfo->joinclauses = das_list_concat(fpinfo->joinclauses,
 													fpinfo_i->remote_conds);
-			fpinfo->remote_conds = mysql_list_concat(fpinfo->remote_conds,
+			fpinfo->remote_conds = das_list_concat(fpinfo->remote_conds,
 													 fpinfo_o->remote_conds);
 			break;
 
@@ -2322,13 +2322,13 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 			{
 				RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
 
-				if (!mysql_is_foreign_expr(root, joinrel, ri->clause, true))
+				if (!das_is_foreign_expr(root, joinrel, ri->clause, true))
 					return false;
 			}
 
-			fpinfo->joinclauses = mysql_list_concat(fpinfo->joinclauses,
+			fpinfo->joinclauses = das_list_concat(fpinfo->joinclauses,
 													fpinfo_o->remote_conds);
-			fpinfo->remote_conds = mysql_list_concat(fpinfo->remote_conds,
+			fpinfo->remote_conds = das_list_concat(fpinfo->remote_conds,
 													 fpinfo_i->remote_conds);
 			break;
 
@@ -2351,18 +2351,18 @@ mysql_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 	fpinfo->relation_name = makeStringInfo();
 	appendStringInfo(fpinfo->relation_name, "(%s) %s JOIN (%s)",
 					 fpinfo_o->relation_name->data,
-					 mysql_get_jointype_name(fpinfo->jointype),
+					 das_get_jointype_name(fpinfo->jointype),
 					 fpinfo_i->relation_name->data);
 
 	return true;
 }
 
 /*
- * mysqlRecheckForeignScan
+ * dasRecheckForeignScan
  *		Execute a local join execution plan for a foreign join.
  */
 static bool
-mysqlRecheckForeignScan(ForeignScanState *node, TupleTableSlot *slot)
+dasRecheckForeignScan(ForeignScanState *node, TupleTableSlot *slot)
 {
 	Index		scanrelid = ((Scan *) node->ss.ps.plan)->scanrelid;
 	PlanState  *outerPlan = outerPlanState(node);
@@ -2386,7 +2386,7 @@ mysqlRecheckForeignScan(ForeignScanState *node, TupleTableSlot *slot)
 }
 
 /*
- * mysql_adjust_whole_row_ref
+ * das_adjust_whole_row_ref
  * 		If the given list of Var nodes has whole-row reference, add Var
  * 		nodes corresponding to all the attributes of the corresponding
  * 		base relation.
@@ -2401,7 +2401,7 @@ mysqlRecheckForeignScan(ForeignScanState *node, TupleTableSlot *slot)
  * returned unmodified and the other list is NIL.
  */
 static List *
-mysql_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
+das_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
 						   List **whole_row_lists, Bitmapset *relids)
 {
 	ListCell   *lc;
@@ -2473,7 +2473,7 @@ mysql_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
 			 * help since those columns can be genuinely NULL in a row.
 			 */
 			wr_var_list =
-				mysql_build_scan_list_for_baserel(rte->relid, var->varno,
+				das_build_scan_list_for_baserel(rte->relid, var->varno,
 												  attrs_used,
 												  &retrieved_attrs);
 			wr_list_array[var->varno - 1] = wr_var_list;
@@ -2482,7 +2482,7 @@ mysql_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
 			{
 				Var		   *tlvar = (Var *) lfirst(cell);
 
-				wr_scan_var_list = mysql_varlist_append_unique_var(wr_scan_var_list,
+				wr_scan_var_list = das_varlist_append_unique_var(wr_scan_var_list,
 																   tlvar);
 			}
 #else
@@ -2495,7 +2495,7 @@ mysql_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
 		}
 		else
 #if PG_VERSION_NUM >= 160000
-			wr_scan_var_list = mysql_varlist_append_unique_var(wr_scan_var_list,
+			wr_scan_var_list = das_varlist_append_unique_var(wr_scan_var_list,
 															   var);
 #else
 			wr_scan_var_list = list_append_unique(wr_scan_var_list, var);
@@ -2515,7 +2515,7 @@ mysql_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
 }
 
 /*
- * mysql_build_scan_list_for_baserel
+ * das_build_scan_list_for_baserel
  * 		Build list of nodes corresponding to the attributes requested for
  * 		given base relation.
  *
@@ -2524,7 +2524,7 @@ mysql_adjust_whole_row_ref(PlannerInfo *root, List *scan_var_list,
  * nodes corresponding to all the attributes in the relation.
  */
 static List *
-mysql_build_scan_list_for_baserel(Oid relid, Index varno,
+das_build_scan_list_for_baserel(Oid relid, Index varno,
 								  Bitmapset *attrs_used,
 								  List **retrieved_attrs)
 {
@@ -2587,7 +2587,7 @@ mysql_build_scan_list_for_baserel(Oid relid, Index varno,
 }
 
 /*
- * mysql_build_whole_row_constr_info
+ * das_build_whole_row_constr_info
  *		Calculate and save the information required to construct whole row
  *		references of base foreign relations involved in the pushed down join.
  *
@@ -2610,7 +2610,7 @@ mysql_build_scan_list_for_baserel(Oid relid, Index varno,
  * ForeignScan node.
  */
 static void
-mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
+das_build_whole_row_constr_info(DASFdwExecState *festate,
 								  TupleDesc tupdesc, Bitmapset *relids,
 								  int max_relid, List *whole_row_lists,
 								  List *scan_tlist, List *fdw_scan_tlist)
@@ -2620,7 +2620,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 	int			cnt_attr;
 	ListCell   *lc;
 	int		   *fs_attr_pos = NULL;
-	MySQLWRState **mysqlwrstates = NULL;
+	DASWRState **daswrstates = NULL;
 	int			fs_num_atts;
 
 	/*
@@ -2628,7 +2628,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 	 * Indexing by the range table index is faster than maintaining an
 	 * associative map.
 	 */
-	mysqlwrstates = (MySQLWRState **) palloc0(sizeof(MySQLWRState *) * max_relid);
+	daswrstates = (DASWRState **) palloc0(sizeof(DASWRState *) * max_relid);
 
 	/*
 	 * Set the whole-row reference state for the relations whose whole-row
@@ -2638,7 +2638,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 	cnt_vl = 0;
 	while ((cnt_rt = bms_next_member(relids, cnt_rt)) >= 0)
 	{
-		MySQLWRState *wr_state = (MySQLWRState *) palloc0(sizeof(MySQLWRState));
+		DASWRState *wr_state = (DASWRState *) palloc0(sizeof(DASWRState));
 		List	   *var_list = list_nth(whole_row_lists, cnt_vl++);
 		int			natts;
 
@@ -2662,7 +2662,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 			Assert(IsA(var, Var) && var->varno == cnt_rt);
 
 #if PG_VERSION_NUM >= 160000
-			tle_sl = mysql_tlist_member_match_var(var, scan_tlist);
+			tle_sl = das_tlist_member_match_var(var, scan_tlist);
 #else
 			tle_sl = tlist_member((Expr *) var, scan_tlist);
 #endif
@@ -2679,7 +2679,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 		wr_state->values = (Datum *) palloc(sizeof(Datum) * natts);
 		wr_state->nulls = (bool *) palloc(sizeof(bool) * natts);
 		BlessTupleDesc(wr_state->tupdesc);
-		mysqlwrstates[cnt_rt - 1] = wr_state;
+		daswrstates[cnt_rt - 1] = wr_state;
 	}
 
 	/*
@@ -2703,7 +2703,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 		else
 		{
 #if PG_VERSION_NUM >= 160000
-			TargetEntry *tle_sl = mysql_tlist_member_match_var(var, scan_tlist);
+			TargetEntry *tle_sl = das_tlist_member_match_var(var, scan_tlist);
 #else
 			TargetEntry *tle_sl = tlist_member((Expr *) var, scan_tlist);
 #endif
@@ -2720,7 +2720,7 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 	 */
 	Assert(fs_num_atts == tupdesc->natts);
 
-	festate->mysqlwrstates = mysqlwrstates;
+	festate->daswrstates = daswrstates;
 	festate->wr_attrs_pos = fs_attr_pos;
 	festate->wr_tupdesc = tupdesc;
 	festate->wr_values = (Datum *) palloc(sizeof(Datum) * tupdesc->natts);
@@ -2730,11 +2730,11 @@ mysql_build_whole_row_constr_info(MySQLFdwExecState *festate,
 }
 
 /*
- * mysql_get_tuple_with_whole_row
+ * das_get_tuple_with_whole_row
  *		Construct the result row with whole-row references.
  */
 static HeapTuple
-mysql_get_tuple_with_whole_row(MySQLFdwExecState *festate, Datum *values,
+das_get_tuple_with_whole_row(DASFdwExecState *festate, Datum *values,
 							   bool *nulls)
 {
 	TupleDesc	tupdesc = festate->wr_tupdesc;
@@ -2758,12 +2758,12 @@ mysql_get_tuple_with_whole_row(MySQLFdwExecState *festate, Datum *values,
 			 * The RTI of relation whose whole row reference is to be
 			 * constructed is stored as -ve attr_pos.
 			 */
-			MySQLWRState *wr_state = festate->mysqlwrstates[-attr_pos - 1];
+			DASWRState *wr_state = festate->daswrstates[-attr_pos - 1];
 
 			wr_nulls[cnt_attr] = nulls[wr_state->wr_null_ind_pos];
 			if (!wr_nulls[cnt_attr])
 			{
-				HeapTuple	wr_tuple = mysql_form_whole_row(wr_state,
+				HeapTuple	wr_tuple = das_form_whole_row(wr_state,
 															values,
 															nulls);
 
@@ -2777,7 +2777,7 @@ mysql_get_tuple_with_whole_row(MySQLFdwExecState *festate, Datum *values,
 }
 
 /*
- * mysql_form_whole_row
+ * das_form_whole_row
  * 		The function constructs whole-row reference for a base relation
  * 		with the information given in wr_state.
  *
@@ -2786,7 +2786,7 @@ mysql_get_tuple_with_whole_row(MySQLFdwExecState *festate, Datum *values,
  * reference.
  */
 static HeapTuple
-mysql_form_whole_row(MySQLWRState *wr_state, Datum *values, bool *nulls)
+das_form_whole_row(DASWRState *wr_state, Datum *values, bool *nulls)
 {
 	int			cnt_attr;
 
@@ -2802,20 +2802,20 @@ mysql_form_whole_row(MySQLWRState *wr_state, Datum *values, bool *nulls)
 }
 
 /*
- * mysql_foreign_grouping_ok
+ * das_foreign_grouping_ok
  * 		Assess whether the aggregation, grouping and having operations can
  * 		be pushed down to the foreign server.  As a side effect, save
- * 		information we obtain in this function to MySQLFdwRelationInfo of
+ * 		information we obtain in this function to DASFdwRelationInfo of
  * 		the input relation.
  */
 static bool
-mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
+das_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 						  Node *havingQual)
 {
 	Query	   *query = root->parse;
 	PathTarget *grouping_target = grouped_rel->reltarget;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) grouped_rel->fdw_private;
-	MySQLFdwRelationInfo *ofpinfo;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) grouped_rel->fdw_private;
+	DASFdwRelationInfo *ofpinfo;
 	ListCell   *lc;
 	int			i;
 	List	   *tlist = NIL;
@@ -2825,7 +2825,7 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 		return false;
 
 	/* Get the fpinfo of the underlying scan relation. */
-	ofpinfo = (MySQLFdwRelationInfo *) fpinfo->outerrel->fdw_private;
+	ofpinfo = (DASFdwRelationInfo *) fpinfo->outerrel->fdw_private;
 
 	/*
 	 * If underneath input relation has any local conditions, those conditions
@@ -2858,14 +2858,14 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 			 * If any of the GROUP BY expression is not shippable we can not
 			 * push down aggregation to the foreign server.
 			 */
-			if (!mysql_is_foreign_expr(root, grouped_rel, expr, true))
+			if (!das_is_foreign_expr(root, grouped_rel, expr, true))
 				return false;
 
 			/*
 			 * If it would be a foreign param, we can't put it into the tlist,
 			 * so we have to fail.
 			 */
-			if (mysql_is_foreign_param(root, grouped_rel, expr))
+			if (das_is_foreign_param(root, grouped_rel, expr))
 				return false;
 
 			/*
@@ -2883,8 +2883,8 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 		else
 		{
 			/* Check entire expression whether it is pushable or not */
-			if (mysql_is_foreign_expr(root, grouped_rel, expr, true) &&
-				!mysql_is_foreign_param(root, grouped_rel, expr))
+			if (das_is_foreign_expr(root, grouped_rel, expr, true) &&
+				!das_is_foreign_param(root, grouped_rel, expr))
 			{
 				/* Pushable, add to tlist */
 				tlist = add_to_flat_tlist(tlist, list_make1(expr));
@@ -2903,7 +2903,7 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 				 * don't have to check is_foreign_param, since that certainly
 				 * won't return true for any such expression.)
 				 */
-				if (!mysql_is_foreign_expr(root, grouped_rel, (Expr *) aggvars, true))
+				if (!das_is_foreign_expr(root, grouped_rel, (Expr *) aggvars, true))
 					return false;
 
 				/*
@@ -2978,7 +2978,7 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 									  NULL);
 #endif
 
-			if (!mysql_is_foreign_expr(root, grouped_rel, expr, true))
+			if (!das_is_foreign_expr(root, grouped_rel, expr, true))
 				fpinfo->local_conds = lappend(fpinfo->local_conds, rinfo);
 			else
 				fpinfo->remote_conds = lappend(fpinfo->remote_conds, rinfo);
@@ -3015,7 +3015,7 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 			 */
 			if (IsA(expr, Aggref))
 			{
-				if (!mysql_is_foreign_expr(root, grouped_rel, expr, true))
+				if (!das_is_foreign_expr(root, grouped_rel, expr, true))
 					return false;
 
 				tlist = add_to_flat_tlist(tlist, list_make1(expr));
@@ -3041,27 +3041,27 @@ mysql_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 }
 
 /*
- * mysqlGetForeignUpperPaths
+ * dasGetForeignUpperPaths
  *		Add paths for post-join operations like aggregation, grouping etc. if
  *		corresponding operations are safe to push down.
  *
  * Right now, we only support aggregate, grouping and having clause pushdown.
  */
 static void
-mysqlGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
+dasGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 						  RelOptInfo *input_rel, RelOptInfo *output_rel,
 						  void *extra)
 {
-	MySQLFdwRelationInfo *fpinfo;
+	DASFdwRelationInfo *fpinfo;
 
-	elog(WARNING, "mysql_fdw: mysqlGetForeignUpperPaths 1");
+	elog(WARNING, "das_fdw: dasGetForeignUpperPaths 1");
 
 	/*
 	 * If input rel is not safe to pushdown, then simply return as we cannot
 	 * perform any post-join operations on the foreign server.
 	 */
 	if (!input_rel->fdw_private ||
-		!((MySQLFdwRelationInfo *) input_rel->fdw_private)->pushdown_safe)
+		!((DASFdwRelationInfo *) input_rel->fdw_private)->pushdown_safe)
 		return;
 
 	/* Ignore stages we don't support; and skip any duplicate calls. */
@@ -3070,29 +3070,29 @@ mysqlGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 		output_rel->fdw_private)
 		return;
 
-	fpinfo = (MySQLFdwRelationInfo *) palloc0(sizeof(MySQLFdwRelationInfo));
+	fpinfo = (DASFdwRelationInfo *) palloc0(sizeof(DASFdwRelationInfo));
 	fpinfo->pushdown_safe = false;
 	fpinfo->stage = stage;
-	fpinfo->options = ((MySQLFdwRelationInfo *) input_rel->fdw_private)->options;
-	fpinfo->das = ((MySQLFdwRelationInfo *) input_rel->fdw_private)->das;
+	fpinfo->options = ((DASFdwRelationInfo *) input_rel->fdw_private)->options;
+	fpinfo->das = ((DASFdwRelationInfo *) input_rel->fdw_private)->das;
 	output_rel->fdw_private = fpinfo;
 
 	if (!fpinfo->das->aggregation_supported)
 		return;
 
-	elog(WARNING, "mysql_fdw: mysqlGetForeignUpperPaths 2");
+	elog(WARNING, "das_fdw: dasGetForeignUpperPaths 2");
 
 	switch (stage)
 	{
 		case UPPERREL_GROUP_AGG:
-			mysql_add_foreign_grouping_paths(root, input_rel, output_rel,
+			das_add_foreign_grouping_paths(root, input_rel, output_rel,
 											 (GroupPathExtraData *) extra);
 			break;
 		case UPPERREL_ORDERED:
-			mysql_add_foreign_ordered_paths(root, input_rel, output_rel);
+			das_add_foreign_ordered_paths(root, input_rel, output_rel);
 			break;
 		case UPPERREL_FINAL:
-			mysql_add_foreign_final_paths(root, input_rel, output_rel,
+			das_add_foreign_final_paths(root, input_rel, output_rel,
 										  (FinalPathExtraData *) extra);
 			break;
 		default:
@@ -3100,23 +3100,23 @@ mysqlGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 			break;
 	}
 
-	elog(WARNING, "mysql_fdw: mysqlGetForeignUpperPaths 2");
+	elog(WARNING, "das_fdw: dasGetForeignUpperPaths 2");
 }
 
 /*
- * mysql_add_foreign_grouping_paths
+ * das_add_foreign_grouping_paths
  *		Add foreign path for grouping and/or aggregation.
  *
  * Given input_rel represents the underlying scan.  The paths are added to the
  * given grouped_rel.
  */
 static void
-mysql_add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
+das_add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 								 RelOptInfo *grouped_rel,
 								 GroupPathExtraData *extra)
 {
 	Query	   *parse = root->parse;
-	MySQLFdwRelationInfo *fpinfo = grouped_rel->fdw_private;
+	DASFdwRelationInfo *fpinfo = grouped_rel->fdw_private;
 	ForeignPath *grouppath;
 	Cost		startup_cost;
 	Cost		total_cost;
@@ -3131,7 +3131,7 @@ mysql_add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	fpinfo->outerrel = input_rel;
 
 	/* Assess if it is safe to push down aggregation and grouping. */
-	if (!mysql_foreign_grouping_ok(root, grouped_rel, extra->havingQual))
+	if (!das_foreign_grouping_ok(root, grouped_rel, extra->havingQual))
 		return;
 
 	/*
@@ -3185,7 +3185,7 @@ mysql_add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 }
 
 /*
- * mysql_get_useful_ecs_for_relation
+ * das_get_useful_ecs_for_relation
  *		Determine which EquivalenceClasses might be involved in useful
  *		orderings of this relation.
  *
@@ -3205,7 +3205,7 @@ mysql_add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
  * here; we're only interested in identifying relevant ECs.
  */
 static List *
-mysql_get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel)
+das_get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel)
 {
 	List	   *useful_eclass_list = NIL;
 	ListCell   *lc;
@@ -3292,7 +3292,7 @@ mysql_get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel)
 }
 
 /*
- * mysql_get_useful_pathkeys_for_relation
+ * das_get_useful_pathkeys_for_relation
  *		Determine which orderings of a relation might be useful.
  *
  * Getting data in sorted order can be useful either because the requested
@@ -3301,11 +3301,11 @@ mysql_get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel)
  * to figure out which pathkeys to consider.
  */
 static List *
-mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
+das_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 {
 	List	   *useful_pathkeys_list = NIL;
 	List	   *useful_eclass_list;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) rel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) rel->fdw_private;
 	EquivalenceClass *query_ec = NULL;
 	ListCell   *lc;
 
@@ -3329,7 +3329,7 @@ mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 			 * end up resorting the entire data set.  So, unless we can push
 			 * down all of the query pathkeys, forget it.
 			 */
-			if (!mysql_is_foreign_pathkey(root, rel, pathkey))
+			if (!das_is_foreign_pathkey(root, rel, pathkey))
 			{
 				query_pathkeys_ok = false;
 				break;
@@ -3344,7 +3344,7 @@ mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 	}
 
 	/* Get the list of interesting EquivalenceClasses. */
-	useful_eclass_list = mysql_get_useful_ecs_for_relation(root, rel);
+	useful_eclass_list = das_get_useful_ecs_for_relation(root, rel);
 
 	/* Extract unique EC for query, if any, so we don't consider it again. */
 	if (list_length(root->query_pathkeys) == 1)
@@ -3371,10 +3371,10 @@ mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 		if (cur_ec == query_ec)
 			continue;
 
-		em = mysql_find_em_for_rel(root, cur_ec, rel);
+		em = das_find_em_for_rel(root, cur_ec, rel);
 
 		/* Can't push down the sort if the EC's opfamily is not shippable. */
-		if (!mysql_is_builtin(linitial_oid(cur_ec->ec_opfamilies)))
+		if (!das_is_builtin(linitial_oid(cur_ec->ec_opfamilies)))
 			continue;
 
 		/* Looks like we can generate a pathkey, so let's do it. */
@@ -3384,7 +3384,7 @@ mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 										 false);
 
 		/* Check for sort operator pushability. */
-		if (mysql_get_sortby_direction_string(em, pathkey, fpinfo->das->pushability_hash) == NULL)
+		if (das_get_sortby_direction_string(em, pathkey, fpinfo->das->pushability_hash) == NULL)
 			continue;
 
 		useful_pathkeys_list = lappend(useful_pathkeys_list,
@@ -3395,7 +3395,7 @@ mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 }
 
 /*
- * mysql_add_paths_with_pathkeys
+ * das_add_paths_with_pathkeys
  *		 Add path with root->query_pathkeys if that's pushable.
  *
  * Pushing down query_pathkeys to the foreign server might let us avoid a
@@ -3403,12 +3403,12 @@ mysql_get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
  */
 #if PG_VERSION_NUM >= 170000
 static void
-mysql_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
+das_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 							  Path *epq_path, Cost base_startup_cost,
 							  Cost base_total_cost, List *restrictlist)
 #else
 static void
-mysql_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
+das_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 							  Path *epq_path, Cost base_startup_cost,
 							  Cost base_total_cost)
 #endif
@@ -3416,7 +3416,7 @@ mysql_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 	ListCell   *lc;
 	List	   *useful_pathkeys_list = NIL; /* List of all pathkeys */
 
-	useful_pathkeys_list = mysql_get_useful_pathkeys_for_relation(root, rel);
+	useful_pathkeys_list = das_get_useful_pathkeys_for_relation(root, rel);
 
 	/* Create one path for each set of pathkeys we found above. */
 	foreach(lc, useful_pathkeys_list)
@@ -3427,8 +3427,8 @@ mysql_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 		Path	   *sorted_epq_path;
 
 		/* TODO put accurate estimates. */
-		startup_cost = base_startup_cost * DEFAULT_MYSQL_SORT_MULTIPLIER;
-		total_cost = base_total_cost * DEFAULT_MYSQL_SORT_MULTIPLIER;
+		startup_cost = base_startup_cost * DEFAULT_das_SORT_MULTIPLIER;
+		total_cost = base_total_cost * DEFAULT_das_SORT_MULTIPLIER;
 
 
 		/*
@@ -3512,7 +3512,7 @@ mysql_add_paths_with_pathkeys(PlannerInfo *root, RelOptInfo *rel,
  * ordering operator is shippable.
  */
 EquivalenceMember *
-mysql_find_em_for_rel(PlannerInfo *root, EquivalenceClass *ec, RelOptInfo *rel)
+das_find_em_for_rel(PlannerInfo *root, EquivalenceClass *ec, RelOptInfo *rel)
 {
 	ListCell   *lc;
 
@@ -3526,7 +3526,7 @@ mysql_find_em_for_rel(PlannerInfo *root, EquivalenceClass *ec, RelOptInfo *rel)
 		 */
 		if (bms_is_subset(em->em_relids, rel->relids) &&
 			!bms_is_empty(em->em_relids) &&
-			mysql_is_foreign_expr(root, rel, em->em_expr, true))
+			das_is_foreign_expr(root, rel, em->em_expr, true))
 			return em;
 	}
 
@@ -3534,19 +3534,19 @@ mysql_find_em_for_rel(PlannerInfo *root, EquivalenceClass *ec, RelOptInfo *rel)
 }
 
 /*
- * mysql_add_foreign_ordered_paths
+ * das_add_foreign_ordered_paths
  *		Add foreign paths for performing the final sort remotely.
  *
  * Given input_rel contains the source-data Paths.  The paths are added to the
  * given ordered_rel.
  */
 static void
-mysql_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
+das_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 								RelOptInfo *ordered_rel)
 {
 	Query	   *parse = root->parse;
-	MySQLFdwRelationInfo *ifpinfo = input_rel->fdw_private;
-	MySQLFdwRelationInfo *fpinfo = ordered_rel->fdw_private;
+	DASFdwRelationInfo *ifpinfo = input_rel->fdw_private;
+	DASFdwRelationInfo *fpinfo = ordered_rel->fdw_private;
 	double		rows;
 	Cost		startup_cost;
 	Cost		total_cost;
@@ -3600,7 +3600,7 @@ mysql_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 		EquivalenceMember *em;
 
 		/*
-		 * mysql_is_foreign_expr would detect volatile expressions as well,
+		 * das_is_foreign_expr would detect volatile expressions as well,
 		 * but checking ec_has_volatile here saves some cycles.
 		 */
 		if (pathkey_ec->ec_has_volatile)
@@ -3610,9 +3610,9 @@ mysql_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 		 * The EC must contain a shippable EM that is computed in input_rel's
 		 * reltarget, else we can't push down the sort.
 		 */
-		em = mysql_find_em_for_rel_target(root, pathkey_ec, input_rel);
+		em = das_find_em_for_rel_target(root, pathkey_ec, input_rel);
 
-		if (mysql_get_sortby_direction_string(em, pathkey, ifpinfo->das->pushability_hash) == NULL)
+		if (das_get_sortby_direction_string(em, pathkey, ifpinfo->das->pushability_hash) == NULL)
 			return;
 	}
 
@@ -3625,7 +3625,7 @@ mysql_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	rows = 10;
 
 	/*
-	 * Build the fdw_private list that will be used by mysqlGetForeignPlan.
+	 * Build the fdw_private list that will be used by dasGetForeignPlan.
 	 * Items in the list must match order in enum FdwPathPrivateIndex.
 	 */
 	fdw_private = list_make2(makeInteger(true), makeInteger(false));
@@ -3659,7 +3659,7 @@ mysql_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 }
 
 /*
- * mysql_find_em_for_rel_target
+ * das_find_em_for_rel_target
  *
  * Find an EquivalenceClass member that is to be computed as a sort column
  * in the given rel's reltarget, and is shippable.
@@ -3672,7 +3672,7 @@ mysql_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
  * ordering operator is shippable.
  */
 EquivalenceMember *
-mysql_find_em_for_rel_target(PlannerInfo *root, EquivalenceClass *ec,
+das_find_em_for_rel_target(PlannerInfo *root, EquivalenceClass *ec,
 							 RelOptInfo *rel)
 {
 	PathTarget *target = rel->reltarget;
@@ -3722,7 +3722,7 @@ mysql_find_em_for_rel_target(PlannerInfo *root, EquivalenceClass *ec,
 				continue;
 
 			/* Check that expression (including relabels!) is shippable */
-			if (mysql_is_foreign_expr(root, rel, em->em_expr, true))
+			if (das_is_foreign_expr(root, rel, em->em_expr, true))
 				return em;
 		}
 
@@ -3733,19 +3733,19 @@ mysql_find_em_for_rel_target(PlannerInfo *root, EquivalenceClass *ec,
 }
 
 /*
- * mysql_add_foreign_final_paths
+ * das_add_foreign_final_paths
  *		Add foreign paths for performing the final processing remotely.
  *
  * Given input_rel contains the source-data Paths.  The paths are added to the
  * given final_rel.
  */
 static void
-mysql_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
+das_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 							  RelOptInfo *final_rel, FinalPathExtraData *extra)
 {
 	Query	   *parse = root->parse;
-	MySQLFdwRelationInfo *ifpinfo = (MySQLFdwRelationInfo *) input_rel->fdw_private;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) final_rel->fdw_private;
+	DASFdwRelationInfo *ifpinfo = (DASFdwRelationInfo *) input_rel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) final_rel->fdw_private;
 	bool		has_final_sort = false;
 	List	   *pathkeys = NIL;
 	double		rows;
@@ -3771,7 +3771,7 @@ mysql_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	if (parse->hasTargetSRFs)
 		return;
 
-	/* MySQL does not support only OFFSET clause in a SELECT command. */
+	/* DAS does not support only OFFSET clause in a SELECT command. */
 	if (parse->limitOffset && !parse->limitCount)
 		return;
 
@@ -3875,7 +3875,7 @@ mysql_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 		ifpinfo->stage == UPPERREL_ORDERED)
 	{
 		input_rel = ifpinfo->outerrel;
-		ifpinfo = (MySQLFdwRelationInfo *) input_rel->fdw_private;
+		ifpinfo = (DASFdwRelationInfo *) input_rel->fdw_private;
 		has_final_sort = true;
 		pathkeys = root->sort_pathkeys;
 	}
@@ -3909,7 +3909,7 @@ mysql_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 
 	/*
 	 * Support only Const and Param nodes as expressions are NOT suported.
-	 * MySQL doesn't support LIMIT/OFFSET NULL/ALL syntax, so check for the
+	 * DAS doesn't support LIMIT/OFFSET NULL/ALL syntax, so check for the
 	 * same.  If limitCount const node is null then do not pushdown
 	 * limit/offset clause and if limitOffset const node is null and
 	 * limitCount const node is not null then pushdown only limit clause.
@@ -3940,7 +3940,7 @@ mysql_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	rows = 1;
 
 	/*
-	 * Build the fdw_private list that will be used by mysqlGetForeignPlan.
+	 * Build the fdw_private list that will be used by dasGetForeignPlan.
 	 * Items in the list must match order in enum FdwPathPrivateIndex.
 	 */
 	fdw_private = list_make2(makeInteger(has_final_sort),
@@ -3979,14 +3979,14 @@ mysql_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 
 #if PG_VERSION_NUM >= 140000
 /*
- * mysql_remove_quotes
+ * das_remove_quotes
  *
  * Return the string by replacing back-tick (`) characters with double quotes
  * (").  If there are two consecutive back-ticks, the first is the escape
  * character which is removed.  Caller should free the allocated memory.
  */
 static char *
-mysql_remove_quotes(char *s1)
+das_remove_quotes(char *s1)
 {
 	int			i,
 				j;
@@ -4024,13 +4024,13 @@ mysql_remove_quotes(char *s1)
 #endif
 
 /*
- * mysql_get_sortby_direction_string
+ * das_get_sortby_direction_string
  *		Fetch the operator oid from the operator family and datatype, and check
  *		whether the operator is the default for sort expr's datatype. If it is,
  *		then return ASC or DESC accordingly; NULL otherwise.
  */
 char *
-mysql_get_sortby_direction_string(EquivalenceMember *em, PathKey *pathkey, HTAB* pushability_hash)
+das_get_sortby_direction_string(EquivalenceMember *em, PathKey *pathkey, HTAB* pushability_hash)
 {
 	Oid			oprid;
 	TypeCacheEntry *typentry;
@@ -4039,7 +4039,7 @@ mysql_get_sortby_direction_string(EquivalenceMember *em, PathKey *pathkey, HTAB*
 		return NULL;
 
 	/* Can't push down the sort if pathkey's opfamily is not shippable. */
-	if (!mysql_is_builtin(pathkey->pk_opfamily))
+	if (!das_is_builtin(pathkey->pk_opfamily))
 		return NULL;
 
 	oprid = get_opfamily_member(pathkey->pk_opfamily, em->em_datatype,
@@ -4051,7 +4051,7 @@ mysql_get_sortby_direction_string(EquivalenceMember *em, PathKey *pathkey, HTAB*
 			 pathkey->pk_opfamily);
 
 	/* Can't push down the sort if the operator is not shippable. */
-	if (!mysql_check_remote_pushability(pushability_hash, oprid))
+	if (!das_check_remote_pushability(pushability_hash, oprid))
 		return NULL;
 
 	/*
@@ -4072,12 +4072,12 @@ mysql_get_sortby_direction_string(EquivalenceMember *em, PathKey *pathkey, HTAB*
 
 #if PG_VERSION_NUM >= 160000
 /*
- * mysql_tlist_member_match_var
+ * das_tlist_member_match_var
  *	  Finds the (first) member of the given tlist whose Var is same as the
  *	  given Var.  Result is NULL if no such member.
  */
 static TargetEntry *
-mysql_tlist_member_match_var(Var *var, List *targetlist)
+das_tlist_member_match_var(Var *var, List *targetlist)
 {
 	ListCell   *temp;
 
@@ -4099,14 +4099,14 @@ mysql_tlist_member_match_var(Var *var, List *targetlist)
 }
 
 /*
- * mysql_varlist_append_unique_var
+ * das_varlist_append_unique_var
  * 		Append var to var list, but only if it isn't already in the list.
  *
  * Whether a var is already a member of list is determined using varno and
  * varattno.
  */
 static List *
-mysql_varlist_append_unique_var(List *varlist, Var *var)
+das_varlist_append_unique_var(List *varlist, Var *var)
 {
 	ListCell   *lc;
 

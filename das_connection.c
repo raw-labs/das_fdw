@@ -3,9 +3,9 @@
 #if PG_VERSION_NUM >= 130000
 #include "common/hashfn.h"
 #endif
-#include "mysql_fdw.h"
+#include "das_fdw.h"
 #include "grpc_client.h"
-#include "mysql_pushability.h"
+#include "das_pushability.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -41,7 +41,7 @@ typedef struct ConnCacheEntry
  */
 static HTAB *ConnectionHash = NULL;
 
-static DAS* das_init(mysql_opt* opts);
+static DAS* das_init(das_opt* opts);
 static void das_close(DAS *conn);
 static void das_inval_callback(Datum arg, int cacheid, uint32 hashvalue);
 
@@ -52,7 +52,7 @@ static void das_inval_callback(Datum arg, int cacheid, uint32 hashvalue);
  * 		established if we don't already have a suitable one.
  */
 DAS *
-das_get_connection(ForeignServer *server, UserMapping *user, mysql_opt *opt)
+das_get_connection(ForeignServer *server, UserMapping *user, das_opt *opt)
 {
 	bool		found;
 	ConnCacheEntry *entry;
@@ -188,7 +188,7 @@ das_release_connection(DAS *conn)
 }
 
 DAS *
-das_fdw_connect(mysql_opt *opt)
+das_fdw_connect(das_opt *opt)
 {
 	DAS 	   *conn;
 
@@ -236,7 +236,7 @@ das_inval_callback(Datum arg, int cacheid, uint32 hashvalue)
 }
 
 static DAS *
-das_init(mysql_opt* opts)
+das_init(das_opt* opts)
 {
     DAS *conn;
 	char   **pushability_list;

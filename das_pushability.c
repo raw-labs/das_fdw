@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * mysql_pushability.c
+ * das_pushability.c
  *		routines for FDW pushability
  *
  * Portions Copyright (c) 2022-2024, EnterpriseDB Corporation.
  *
  * IDENTIFICATION
- *		mysql_pushability.c
+ *		das_pushability.c
  *
  *-------------------------------------------------------------------------
  */
@@ -16,7 +16,7 @@
 #include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
-#include "mysql_pushability.h"
+#include "das_pushability.h"
 #include "storage/fd.h"
 #include "utils/fmgrprotos.h"
 #include "utils/hsearch.h"
@@ -46,12 +46,12 @@ get_config_filename(void)
 }
 
 /*
- * mysql_check_remote_pushability
+ * das_check_remote_pushability
  * 		Lookups into hash table by forming the hash key from provided object
  * 		oid.
  */
 bool
-mysql_check_remote_pushability(HTAB *pushability_hash, Oid object_oid)
+das_check_remote_pushability(HTAB *pushability_hash, Oid object_oid)
 {
 	bool		found = false;
 
@@ -84,7 +84,7 @@ populate_pushability_hash()
 	ctl.hcxt = CurrentMemoryContext;
 
 	/* Create the hash table */
-	hash = hash_create("mysql_fdw push elements hash", 256,
+	hash = hash_create("das_fdw push elements hash", 256,
 					   &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/* Get the config file name */
@@ -209,7 +209,7 @@ populate_pushability_hash_from_list(MemoryContext htab_ctx, char **pushability_l
 	ctl.hcxt = htab_ctx;
 
 	/* Create the hash table */
-	hash = hash_create("mysql_fdw push elements hash", 256,
+	hash = hash_create("das_fdw push elements hash", 256,
 					   &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/*

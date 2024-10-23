@@ -610,7 +610,7 @@ struct SqlQueryIterator
     std::unique_ptr<grpc::ClientReader<Rows>> reader;
     Rows current_rows;            // Buffer for current Rows message
     int current_row_index;        // Index within current_rows
-    mysql_opt* opts;
+    das_opt* opts;
     char* sql;
     bool started;
 };
@@ -618,7 +618,7 @@ struct SqlQueryIterator
 // Expose the functions to C
 extern "C" {
 
-void wait_for_server(mysql_opt* opts)
+void wait_for_server(das_opt* opts)
 {
 
 }
@@ -627,7 +627,7 @@ void wait_for_server(mysql_opt* opts)
 // Registration Service
 //////////////////////////////////////////////////////////////////////////////////////////
 
-char* register_das(mysql_opt* opts)
+char* register_das(das_opt* opts)
 {
     ListCell *lc_key;
     ListCell *lc_value;
@@ -667,7 +667,7 @@ char* register_das(mysql_opt* opts)
     return pstrdup(response.id().c_str());
 }
 
-void unregister_das(mysql_opt* opts)
+void unregister_das(das_opt* opts)
 {
     elog(DEBUG3, "Unregistering DAS with URL: %s, id: %s", opts->das_url, opts->das_id);
 
@@ -684,7 +684,7 @@ void unregister_das(mysql_opt* opts)
         elog(ERROR, "Failed to unregister DAS: %s", status.error_message().c_str());
 }
 
-char** get_operations_supported(mysql_opt* opts, bool* orderby_supported, bool* join_supported, bool* aggregation_supported, int* pushability_len)
+char** get_operations_supported(das_opt* opts, bool* orderby_supported, bool* join_supported, bool* aggregation_supported, int* pushability_len)
 {
     elog(DEBUG3, "Getting supported operations for DAS with URL: %s, id: %s", opts->das_url, opts->das_id);
 
@@ -771,7 +771,7 @@ void free_operations_supported(char** pushability_list, int pushability_len)
 // Table Definitions Service
 //////////////////////////////////////////////////////////////////////////////////////////
 
-char** get_table_definitions(mysql_opt* opts, const char* server_name, int* num_tables)
+char** get_table_definitions(das_opt* opts, const char* server_name, int* num_tables)
 {
     elog(DEBUG3, "Getting table definitions for DAS with URL: %s, id: %s, server: %s", opts->das_url, opts->das_id, server_name);
 
@@ -800,7 +800,7 @@ char** get_table_definitions(mysql_opt* opts, const char* server_name, int* num_
 // SQL Service
 //////////////////////////////////////////////////////////////////////////////////////////
 
-void get_query_estimate(mysql_opt* opts, const char* sql, double* rows, double* width)
+void get_query_estimate(das_opt* opts, const char* sql, double* rows, double* width)
 {
     elog(WARNING, "Getting query estimate for DAS with URL: %s, id: %s, SQL: %s", opts->das_url, opts->das_id, sql);
 
@@ -824,7 +824,7 @@ void get_query_estimate(mysql_opt* opts, const char* sql, double* rows, double* 
     elog(WARNING, "Got query estimate: rows: %f, width: %f", *rows, *width);
 }
 
-SqlQueryIterator* sql_query_iterator_init(mysql_opt* opts, const char* sql, const char* plan_id)
+SqlQueryIterator* sql_query_iterator_init(das_opt* opts, const char* sql, const char* plan_id)
 {
     elog(WARNING, "Initializing SQL query iterator for DAS with URL: %s, das_id: %s, plan_id: %s, SQL: %s", opts->das_url, opts->das_id, plan_id, sql);
 
@@ -943,7 +943,7 @@ void sql_query_iterator_close(SqlQueryIterator* iterator)
 // Table Update Service
 //////////////////////////////////////////////////////////////////////////////////////////
 
-char* unique_column(mysql_opt* opts, const char* table_name)
+char* unique_column(das_opt* opts, const char* table_name)
 {
     elog(DEBUG3, "Getting unique column for DAS with URL: %s, id: %s, table: %s", opts->das_url, opts->das_id, table_name);
 
@@ -979,7 +979,7 @@ char* unique_column(mysql_opt* opts, const char* table_name)
     return pstrdup(response.column().c_str());
 }
 
-void insert_row(mysql_opt* opts, const char* table_name, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods)
+void insert_row(das_opt* opts, const char* table_name, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods)
 {
     elog(DEBUG3, "Inserting row into table %s for DAS with URL: %s, id: %s", table_name, opts->das_url, opts->das_id);
 
@@ -1037,7 +1037,7 @@ void insert_row(mysql_opt* opts, const char* table_name, int num_columns, int* a
     elog(DEBUG3, "Row inserted successfully");
 }
 
-void update_row(mysql_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods)
+void update_row(das_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods)
 {
     elog(DEBUG3, "Updating row in table %s for DAS with URL: %s, id: %s", table_name, opts->das_url, opts->das_id);
 
@@ -1092,7 +1092,7 @@ void update_row(mysql_opt* opts, const char* table_name, Datum k_value, Oid k_pg
     elog(DEBUG3, "Row updated successfully");
 }
 
-void delete_row(mysql_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods)
+void delete_row(das_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods)
 {
     elog(DEBUG3, "Deleting row from table %s for DAS with URL: %s, id: %s", table_name, opts->das_url, opts->das_id);
 

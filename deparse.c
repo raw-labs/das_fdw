@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * deparse.c
- * 		Query deparser for mysql_fdw
+ * 		Query deparser for das_fdw
  *
  * Portions Copyright (c) 2012-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 2004-2024, EnterpriseDB Corporation.
@@ -25,8 +25,8 @@
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "datatype/timestamp.h"
-#include "mysql_fdw.h"
-#include "mysql_pushability.h"
+#include "das_fdw.h"
+#include "das_pushability.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "optimizer/clauses.h"
@@ -102,55 +102,55 @@ typedef struct deparse_expr_cxt
  * Functions to construct string representation of a node tree.
  */
 static void deparseExpr(Expr *expr, deparse_expr_cxt *context);
-static void mysql_deparse_var(Var *node, deparse_expr_cxt *context);
-static void mysql_deparse_const(Const *node, deparse_expr_cxt *context);
-static void mysql_deparse_param(Param *node, deparse_expr_cxt *context);
-static void mysql_deparse_array_ref(SubscriptingRef *node,
+static void das_deparse_var(Var *node, deparse_expr_cxt *context);
+static void das_deparse_const(Const *node, deparse_expr_cxt *context);
+static void das_deparse_param(Param *node, deparse_expr_cxt *context);
+static void das_deparse_array_ref(SubscriptingRef *node,
 									deparse_expr_cxt *context);
-static void mysql_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context);
-static void mysql_deparse_op_expr(OpExpr *node, deparse_expr_cxt *context);
-static void mysql_deparse_operator_name(StringInfo buf,
+static void das_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context);
+static void das_deparse_op_expr(OpExpr *node, deparse_expr_cxt *context);
+static void das_deparse_operator_name(StringInfo buf,
 										Form_pg_operator opform);
-static void mysql_deparse_distinct_expr(DistinctExpr *node,
+static void das_deparse_distinct_expr(DistinctExpr *node,
 										deparse_expr_cxt *context);
-static void mysql_deparse_scalar_array_op_expr(ScalarArrayOpExpr *node,
+static void das_deparse_scalar_array_op_expr(ScalarArrayOpExpr *node,
 											   deparse_expr_cxt *context);
-static void mysql_deparse_relabel_type(RelabelType *node,
+static void das_deparse_relabel_type(RelabelType *node,
 									   deparse_expr_cxt *context);
-static void mysql_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context);
-static void mysql_deparse_null_test(NullTest *node, deparse_expr_cxt *context);
-static void mysql_print_remote_param(int paramindex, Oid paramtype,
+static void das_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context);
+static void das_deparse_null_test(NullTest *node, deparse_expr_cxt *context);
+static void das_print_remote_param(int paramindex, Oid paramtype,
 									 int32 paramtypmod,
 									 deparse_expr_cxt *context);
-static void mysql_print_remote_placeholder(Oid paramtype, int32 paramtypmod,
+static void das_print_remote_placeholder(Oid paramtype, int32 paramtypmod,
 										   deparse_expr_cxt *context);
-static void mysql_deparse_relation(StringInfo buf, Relation rel);
-static void mysql_deparse_target_list(StringInfo buf, PlannerInfo *root,
+static void das_deparse_relation(StringInfo buf, Relation rel);
+static void das_deparse_target_list(StringInfo buf, PlannerInfo *root,
 									  Index rtindex, Relation rel,
 									  Bitmapset *attrs_used,
 									  List **retrieved_attrs);
-static void mysql_deparse_column_ref(StringInfo buf, int varno, int varattno,
+static void das_deparse_column_ref(StringInfo buf, int varno, int varattno,
 									 PlannerInfo *root, bool qualify_col);
-static void mysql_deparse_select_sql(List *tlist, List **retrieved_attrs,
+static void das_deparse_select_sql(List *tlist, List **retrieved_attrs,
 									 deparse_expr_cxt *context);
-static void mysql_append_conditions(List *exprs, deparse_expr_cxt *context);
-static void mysql_deparse_explicit_target_list(List *tlist,
+static void das_append_conditions(List *exprs, deparse_expr_cxt *context);
+static void das_deparse_explicit_target_list(List *tlist,
 											   List **retrieved_attrs,
 											   deparse_expr_cxt *context);
-static void mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
+static void das_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 											RelOptInfo *foreignrel,
 											bool use_alias, List **param_list);
-static void mysql_deparse_from_expr(List *quals, deparse_expr_cxt *context);
-static void mysql_append_function_name(Oid funcid, deparse_expr_cxt *context);
-static void mysql_deparse_aggref(Aggref *node, deparse_expr_cxt *context);
-static void mysql_append_groupby_clause(List *tlist, deparse_expr_cxt *context);
-static Node *mysql_deparse_sort_group_clause(Index ref, List *tlist,
+static void das_deparse_from_expr(List *quals, deparse_expr_cxt *context);
+static void das_append_function_name(Oid funcid, deparse_expr_cxt *context);
+static void das_deparse_aggref(Aggref *node, deparse_expr_cxt *context);
+static void das_append_groupby_clause(List *tlist, deparse_expr_cxt *context);
+static Node *das_deparse_sort_group_clause(Index ref, List *tlist,
 											 bool force_colno,
 											 deparse_expr_cxt *context);
-static void mysql_append_orderby_clause(List *pathkeys, bool has_final_sort,
+static void das_append_orderby_clause(List *pathkeys, bool has_final_sort,
 										deparse_expr_cxt *context);
-static void mysql_append_limit_clause(deparse_expr_cxt *context);
-static void mysql_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
+static void das_append_limit_clause(deparse_expr_cxt *context);
+static void das_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
 										Oid sortcoltype, bool nulls_first,
 										deparse_expr_cxt *context);
 
@@ -170,7 +170,7 @@ static char *cur_opname = NULL;
  * schema_name FDW option overrides schema name.
  */
 static void
-mysql_deparse_relation(StringInfo buf, Relation rel)
+das_deparse_relation(StringInfo buf, Relation rel)
 {
 	ForeignTable *table;
 	const char *nspname = NULL;
@@ -202,13 +202,13 @@ mysql_deparse_relation(StringInfo buf, Relation rel)
 	if (relname == NULL)
 		relname = RelationGetRelationName(rel);
 
-	// appendStringInfo(buf, "%s.%s", mysql_quote_identifier(nspname, '`'),
-	// 				 mysql_quote_identifier(relname, '`'));
-	appendStringInfo(buf, "%s", mysql_quote_identifier(relname, '`'));
+	// appendStringInfo(buf, "%s.%s", das_quote_identifier(nspname, '`'),
+	// 				 das_quote_identifier(relname, '`'));
+	appendStringInfo(buf, "%s", das_quote_identifier(relname, '`'));
 }
 
 char *
-mysql_quote_identifier(const char *str, char quotechar)
+das_quote_identifier(const char *str, char quotechar)
 {
 	char	   *result = palloc(strlen(str) * 2 + 3);
 	char	   *res = result;
@@ -228,7 +228,7 @@ mysql_quote_identifier(const char *str, char quotechar)
 }
 
 /*
- * mysql_deparse_select_stmt_for_rel
+ * das_deparse_select_stmt_for_rel
  * 		Deparse SELECT statement for given relation into buf.
  *
  * tlist contains the list of desired columns to be fetched from foreign
@@ -249,7 +249,7 @@ mysql_quote_identifier(const char *str, char quotechar)
  * List of columns selected is returned in retrieved_attrs.
  */
 extern void
-mysql_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root,
+das_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root,
 								  RelOptInfo *rel, List *tlist,
 								  List *remote_conds, List *pathkeys,
 								  bool has_final_sort, bool has_limit,
@@ -257,7 +257,7 @@ mysql_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root,
 {
 	deparse_expr_cxt context;
 	List	   *quals;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) rel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) rel->fdw_private;
 
 	/*
 	 * We handle relations for foreign tables and joins between those and
@@ -274,7 +274,7 @@ mysql_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root,
 	context.is_not_distinct_op = false;
 
 	/* Construct SELECT clause */
-	mysql_deparse_select_sql(tlist, retrieved_attrs, &context);
+	das_deparse_select_sql(tlist, retrieved_attrs, &context);
 
 	/*
 	 * For upper relations, the WHERE clause is built from the remote
@@ -283,53 +283,53 @@ mysql_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root,
 	 */
 	if (IS_UPPER_REL(rel))
 	{
-		MySQLFdwRelationInfo *ofpinfo;
+		DASFdwRelationInfo *ofpinfo;
 
-		ofpinfo = (MySQLFdwRelationInfo *) fpinfo->outerrel->fdw_private;
+		ofpinfo = (DASFdwRelationInfo *) fpinfo->outerrel->fdw_private;
 		quals = ofpinfo->remote_conds;
 	}
 	else
 		quals = remote_conds;
 
 	/* Construct FROM and WHERE clauses */
-	mysql_deparse_from_expr(quals, &context);
+	das_deparse_from_expr(quals, &context);
 
 	if (IS_UPPER_REL(rel))
 	{
 		/* Append GROUP BY clause */
-		mysql_append_groupby_clause(fpinfo->grouped_tlist, &context);
+		das_append_groupby_clause(fpinfo->grouped_tlist, &context);
 
 		/* Append HAVING clause */
 		if (remote_conds)
 		{
 			appendStringInfoString(buf, " HAVING ");
-			mysql_append_conditions(remote_conds, &context);
+			das_append_conditions(remote_conds, &context);
 		}
 	}
 
 	/* Add ORDER BY clause if we found any useful pathkeys */
 	if (pathkeys)
-		mysql_append_orderby_clause(pathkeys, has_final_sort, &context);
+		das_append_orderby_clause(pathkeys, has_final_sort, &context);
 
 	/* Add LIMIT clause if necessary */
 	if (has_limit)
-		mysql_append_limit_clause(&context);
+		das_append_limit_clause(&context);
 }
 
 /*
- * mysql_deparse_select_sql
+ * das_deparse_select_sql
  * 		Construct a simple SELECT statement that retrieves desired columns
  * 		of the specified foreign table, and append it to "buf".  The output
  * 		contains just "SELECT ...".
  *
  * tlist is the list of desired columns.  Read prologue of
- * mysql_deparse_select_stmt_for_rel() for details.
+ * das_deparse_select_stmt_for_rel() for details.
  *
  * We also create an integer List of the columns being retrieved, which is
  * returned to *retrieved_attrs.
  */
 static void
-mysql_deparse_select_sql(List *tlist, List **retrieved_attrs,
+das_deparse_select_sql(List *tlist, List **retrieved_attrs,
 						 deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
@@ -347,13 +347,13 @@ mysql_deparse_select_sql(List *tlist, List **retrieved_attrs,
 		 * For a join or upper relation the input tlist gives the list of
 		 * columns required to be fetched from the foreign server.
 		 */
-		mysql_deparse_explicit_target_list(tlist, retrieved_attrs, context);
+		das_deparse_explicit_target_list(tlist, retrieved_attrs, context);
 	}
 	else
 	{
 		RangeTblEntry *rte = planner_rt_fetch(foreignrel->relid, root);
 		Relation	rel;
-		MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) foreignrel->fdw_private;
+		DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) foreignrel->fdw_private;
 
 		/*
 		 * Core code already has some lock on each rel being planned, so we
@@ -365,7 +365,7 @@ mysql_deparse_select_sql(List *tlist, List **retrieved_attrs,
 		rel = table_open(rte->relid, NoLock);
 #endif
 
-		mysql_deparse_target_list(buf, root, foreignrel->relid, rel,
+		das_deparse_target_list(buf, root, foreignrel->relid, rel,
 								  fpinfo->attrs_used, retrieved_attrs);
 
 #if PG_VERSION_NUM < 130000
@@ -377,14 +377,14 @@ mysql_deparse_select_sql(List *tlist, List **retrieved_attrs,
 }
 
 /*
- * mysql_deparse_explicit_target_list
+ * das_deparse_explicit_target_list
  * 		Deparse given targetlist and append it to context->buf.
  *
  * retrieved_attrs is the list of continuously increasing integers starting
  * from 1.  It has same number of entries as tlist.
  */
 static void
-mysql_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
+das_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 								   deparse_expr_cxt *context)
 {
 	ListCell   *lc;
@@ -408,14 +408,14 @@ mysql_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 }
 
 /*
- * mysql_deparse_from_expr
+ * das_deparse_from_expr
  * 		Construct a FROM clause and, if needed, a WHERE clause, and
  * 		append those to "buf".
  *
  * quals is the list of clauses to be included in the WHERE clause.
  */
 static void
-mysql_deparse_from_expr(List *quals, deparse_expr_cxt *context)
+das_deparse_from_expr(List *quals, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	RelOptInfo *scanrel = context->scanrel;
@@ -426,7 +426,7 @@ mysql_deparse_from_expr(List *quals, deparse_expr_cxt *context)
 
 	/* Construct FROM clause */
 	appendStringInfoString(buf, " FROM ");
-	mysql_deparse_from_expr_for_rel(buf, context->root, scanrel,
+	das_deparse_from_expr_for_rel(buf, context->root, scanrel,
 									(bms_membership(scanrel->relids) == BMS_MULTIPLE),
 									context->params_list);
 
@@ -434,7 +434,7 @@ mysql_deparse_from_expr(List *quals, deparse_expr_cxt *context)
 	if (quals != NIL)
 	{
 		appendStringInfoString(buf, " WHERE ");
-		mysql_append_conditions(quals, context);
+		das_append_conditions(quals, context);
 	}
 }
 
@@ -442,7 +442,7 @@ mysql_deparse_from_expr(List *quals, deparse_expr_cxt *context)
  * Deparse remote INSERT statement
  */
 void
-mysql_deparse_insert(StringInfo buf, PlannerInfo *root, Index rtindex,
+das_deparse_insert(StringInfo buf, PlannerInfo *root, Index rtindex,
 					 Relation rel, List *targetAttrs, bool doNothing)
 {
 	ListCell   *lc;
@@ -451,7 +451,7 @@ mysql_deparse_insert(StringInfo buf, PlannerInfo *root, Index rtindex,
 #endif
 
 	appendStringInfo(buf, "INSERT %sINTO ", doNothing ? "IGNORE " : "");
-	mysql_deparse_relation(buf, rel);
+	das_deparse_relation(buf, rel);
 
 	if (targetAttrs)
 	{
@@ -469,7 +469,7 @@ mysql_deparse_insert(StringInfo buf, PlannerInfo *root, Index rtindex,
 				appendStringInfoString(buf, ", ");
 			first = false;
 
-			mysql_deparse_column_ref(buf, rtindex, attnum, root, false);
+			das_deparse_column_ref(buf, rtindex, attnum, root, false);
 		}
 
 		appendStringInfoString(buf, ") VALUES (");
@@ -500,7 +500,7 @@ mysql_deparse_insert(StringInfo buf, PlannerInfo *root, Index rtindex,
 }
 
 void
-mysql_deparse_analyze(StringInfo sql, char *dbname, char *relname)
+das_deparse_analyze(StringInfo sql, char *dbname, char *relname)
 {
 	appendStringInfo(sql, "SELECT");
 	appendStringInfo(sql, " round(((data_length + index_length)), 2)");
@@ -514,7 +514,7 @@ mysql_deparse_analyze(StringInfo sql, char *dbname, char *relname)
  * This is used for both SELECT and RETURNING targetlists.
  */
 static void
-mysql_deparse_target_list(StringInfo buf, PlannerInfo *root, Index rtindex,
+das_deparse_target_list(StringInfo buf, PlannerInfo *root, Index rtindex,
 						  Relation rel, Bitmapset *attrs_used,
 						  List **retrieved_attrs)
 {
@@ -545,7 +545,7 @@ mysql_deparse_target_list(StringInfo buf, PlannerInfo *root, Index rtindex,
 				appendStringInfoString(buf, ", ");
 			first = false;
 
-			mysql_deparse_column_ref(buf, rtindex, i, root, false);
+			das_deparse_column_ref(buf, rtindex, i, root, false);
 			*retrieved_attrs = lappend_int(*retrieved_attrs, i);
 		}
 	}
@@ -560,7 +560,7 @@ mysql_deparse_target_list(StringInfo buf, PlannerInfo *root, Index rtindex,
  * column_name FDW option, use that instead of attribute name.
  */
 static void
-mysql_deparse_column_ref(StringInfo buf, int varno, int varattno,
+das_deparse_column_ref(StringInfo buf, int varno, int varattno,
 						 PlannerInfo *root, bool qualify_col)
 {
 	RangeTblEntry *rte;
@@ -600,14 +600,14 @@ mysql_deparse_column_ref(StringInfo buf, int varno, int varattno,
 	if (qualify_col)
 		ADD_REL_QUALIFIER(buf, varno);
 
-	appendStringInfoString(buf, mysql_quote_identifier(colname, '`'));
+	appendStringInfoString(buf, das_quote_identifier(colname, '`'));
 }
 
 /*
 * Append a SQL string literal representing "val" to buf.
 */
 static void
-mysql_deparse_string_literal(StringInfo buf, const char *val)
+das_deparse_string_literal(StringInfo buf, const char *val)
 {
 	const char *valptr;
 
@@ -644,41 +644,41 @@ deparseExpr(Expr *node, deparse_expr_cxt *context)
 	switch (nodeTag(node))
 	{
 		case T_Var:
-			mysql_deparse_var((Var *) node, context);
+			das_deparse_var((Var *) node, context);
 			break;
 		case T_Const:
-			mysql_deparse_const((Const *) node, context);
+			das_deparse_const((Const *) node, context);
 			break;
 		case T_Param:
-			mysql_deparse_param((Param *) node, context);
+			das_deparse_param((Param *) node, context);
 			break;
 		case T_SubscriptingRef:
-			mysql_deparse_array_ref((SubscriptingRef *) node, context);
+			das_deparse_array_ref((SubscriptingRef *) node, context);
 			break;
 		case T_FuncExpr:
-			mysql_deparse_func_expr((FuncExpr *) node, context);
+			das_deparse_func_expr((FuncExpr *) node, context);
 			break;
 		case T_OpExpr:
-			mysql_deparse_op_expr((OpExpr *) node, context);
+			das_deparse_op_expr((OpExpr *) node, context);
 			break;
 		case T_DistinctExpr:
-			mysql_deparse_distinct_expr((DistinctExpr *) node, context);
+			das_deparse_distinct_expr((DistinctExpr *) node, context);
 			break;
 		case T_ScalarArrayOpExpr:
-			mysql_deparse_scalar_array_op_expr((ScalarArrayOpExpr *) node,
+			das_deparse_scalar_array_op_expr((ScalarArrayOpExpr *) node,
 											   context);
 			break;
 		case T_RelabelType:
-			mysql_deparse_relabel_type((RelabelType *) node, context);
+			das_deparse_relabel_type((RelabelType *) node, context);
 			break;
 		case T_BoolExpr:
-			mysql_deparse_bool_expr((BoolExpr *) node, context);
+			das_deparse_bool_expr((BoolExpr *) node, context);
 			break;
 		case T_NullTest:
-			mysql_deparse_null_test((NullTest *) node, context);
+			das_deparse_null_test((NullTest *) node, context);
 			break;
 		case T_Aggref:
-			mysql_deparse_aggref((Aggref *) node, context);
+			das_deparse_aggref((Aggref *) node, context);
 			break;
 		default:
 			elog(ERROR, "unsupported expression type for deparse: %d",
@@ -688,7 +688,7 @@ deparseExpr(Expr *node, deparse_expr_cxt *context)
 }
 
 /*
- * Deparse Interval type into MySQL Interval representation.
+ * Deparse Interval type into DAS Interval representation.
  */
 static void
 deparse_interval(StringInfo buf, Datum datum)
@@ -764,7 +764,7 @@ do { \
  * to *retrieved_attrs.
  */
 void
-mysql_deparse_update(StringInfo buf, PlannerInfo *root, Index rtindex,
+das_deparse_update(StringInfo buf, PlannerInfo *root, Index rtindex,
 					 Relation rel, List *targetAttrs, char *attname)
 {
 	AttrNumber	pindex;
@@ -775,7 +775,7 @@ mysql_deparse_update(StringInfo buf, PlannerInfo *root, Index rtindex,
 #endif
 
 	appendStringInfoString(buf, "UPDATE ");
-	mysql_deparse_relation(buf, rel);
+	das_deparse_relation(buf, rel);
 	appendStringInfoString(buf, " SET ");
 
 	pindex = 2;
@@ -791,7 +791,7 @@ mysql_deparse_update(StringInfo buf, PlannerInfo *root, Index rtindex,
 			appendStringInfoString(buf, ", ");
 		first = false;
 
-		mysql_deparse_column_ref(buf, rtindex, attnum, root, false);
+		das_deparse_column_ref(buf, rtindex, attnum, root, false);
 
 #if PG_VERSION_NUM >= 140000
 		if (TupleDescAttr(tupdesc, attnum - 1)->attgenerated)
@@ -815,11 +815,11 @@ mysql_deparse_update(StringInfo buf, PlannerInfo *root, Index rtindex,
  * to *retrieved_attrs.
  */
 void
-mysql_deparse_delete(StringInfo buf, PlannerInfo *root, Index rtindex,
+das_deparse_delete(StringInfo buf, PlannerInfo *root, Index rtindex,
 					 Relation rel, char *name)
 {
 	appendStringInfoString(buf, "DELETE FROM ");
-	mysql_deparse_relation(buf, rel);
+	das_deparse_relation(buf, rel);
 	appendStringInfo(buf, " WHERE %s = ?", name);
 }
 
@@ -832,7 +832,7 @@ mysql_deparse_delete(StringInfo buf, PlannerInfo *root, Index rtindex,
  * deparseParam for comments.
  */
 static void
-mysql_deparse_var(Var *node, deparse_expr_cxt *context)
+das_deparse_var(Var *node, deparse_expr_cxt *context)
 {
 	Relids		relids = context->scanrel->relids;
 	bool		qualify_col;
@@ -842,7 +842,7 @@ mysql_deparse_var(Var *node, deparse_expr_cxt *context)
 	if (bms_is_member(node->varno, relids) && node->varlevelsup == 0)
 	{
 		/* Var belongs to foreign table */
-		mysql_deparse_column_ref(context->buf, node->varno, node->varattno,
+		das_deparse_column_ref(context->buf, node->varno, node->varattno,
 								 context->root, qualify_col);
 	}
 	else
@@ -866,11 +866,11 @@ mysql_deparse_var(Var *node, deparse_expr_cxt *context)
 				pindex++;
 				*context->params_list = lappend(*context->params_list, node);
 			}
-			mysql_print_remote_param(pindex, node->vartype, node->vartypmod,
+			das_print_remote_param(pindex, node->vartype, node->vartypmod,
 									 context);
 		}
 		else
-			mysql_print_remote_placeholder(node->vartype, node->vartypmod,
+			das_print_remote_placeholder(node->vartype, node->vartypmod,
 										   context);
 	}
 }
@@ -881,7 +881,7 @@ mysql_deparse_var(Var *node, deparse_expr_cxt *context)
  * This function has to be kept in sync with ruleutils.c's get_const_expr.
  */
 static void
-mysql_deparse_const(Const *node, deparse_expr_cxt *context)
+das_deparse_const(Const *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	Oid			typoutput;
@@ -944,7 +944,7 @@ mysql_deparse_const(Const *node, deparse_expr_cxt *context)
 			 * The string for BYTEA always seems to be in the format "\\x##"
 			 * where # is a hex digit, Even if the value passed in is
 			 * 'hi'::bytea we will receive "\x6869". Making this assumption
-			 * allows us to quickly convert postgres escaped strings to mysql
+			 * allows us to quickly convert postgres escaped strings to das
 			 * ones for comparison
 			 */
 			extval = OidOutputFunctionCall(typoutput, node->constvalue);
@@ -952,7 +952,7 @@ mysql_deparse_const(Const *node, deparse_expr_cxt *context)
 			break;
 		default:
 			extval = OidOutputFunctionCall(typoutput, node->constvalue);
-			mysql_deparse_string_literal(buf, extval);
+			das_deparse_string_literal(buf, extval);
 			break;
 	}
 }
@@ -966,7 +966,7 @@ mysql_deparse_const(Const *node, deparse_expr_cxt *context)
  * no need to identify a parameter number.
  */
 static void
-mysql_deparse_param(Param *node, deparse_expr_cxt *context)
+das_deparse_param(Param *node, deparse_expr_cxt *context)
 {
 	if (context->params_list)
 	{
@@ -987,11 +987,11 @@ mysql_deparse_param(Param *node, deparse_expr_cxt *context)
 			*context->params_list = lappend(*context->params_list, node);
 		}
 
-		mysql_print_remote_param(pindex, node->paramtype, node->paramtypmod,
+		das_print_remote_param(pindex, node->paramtype, node->paramtypmod,
 								 context);
 	}
 	else
-		mysql_print_remote_placeholder(node->paramtype, node->paramtypmod,
+		das_print_remote_placeholder(node->paramtype, node->paramtypmod,
 									   context);
 }
 
@@ -999,7 +999,7 @@ mysql_deparse_param(Param *node, deparse_expr_cxt *context)
  * Deparse an array subscript expression.
  */
 static void
-mysql_deparse_array_ref(SubscriptingRef *node, deparse_expr_cxt *context)
+das_deparse_array_ref(SubscriptingRef *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	ListCell   *lowlist_item;
@@ -1046,11 +1046,11 @@ mysql_deparse_array_ref(SubscriptingRef *node, deparse_expr_cxt *context)
 }
 
 /*
- * This is possible that the name of function in PostgreSQL and mysql differ,
- * so return the mysql eloquent function name.
+ * This is possible that the name of function in PostgreSQL and das differ,
+ * so return the das eloquent function name.
  */
 static char *
-mysql_replace_function(char *in)
+das_replace_function(char *in)
 {
 	if (strcmp(in, "btrim") == 0)
 		return "trim";
@@ -1062,7 +1062,7 @@ mysql_replace_function(char *in)
  * Deparse a function call.
  */
 static void
-mysql_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
+das_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	bool		first;
@@ -1093,7 +1093,7 @@ mysql_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
 	/*
 	 * Normal function: display as proname(args).
 	 */
-	mysql_append_function_name(node->funcid, context);
+	das_append_function_name(node->funcid, context);
 	appendStringInfoChar(buf, '(');
 
 	/* ... and all the arguments */
@@ -1114,7 +1114,7 @@ mysql_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
  * priority of operations, we always parenthesize the arguments.
  */
 static void
-mysql_deparse_op_expr(OpExpr *node, deparse_expr_cxt *context)
+das_deparse_op_expr(OpExpr *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	HeapTuple	tuple;
@@ -1147,7 +1147,7 @@ mysql_deparse_op_expr(OpExpr *node, deparse_expr_cxt *context)
 	}
 
 	/* Deparse operator name. */
-	mysql_deparse_operator_name(buf, form);
+	das_deparse_operator_name(buf, form);
 
 	/* Deparse right operand. */
 	if (oprkind == 'l' || oprkind == 'b')
@@ -1166,7 +1166,7 @@ mysql_deparse_op_expr(OpExpr *node, deparse_expr_cxt *context)
  * Print the name of an operator.
  */
 static void
-mysql_deparse_operator_name(StringInfo buf, Form_pg_operator opform)
+das_deparse_operator_name(StringInfo buf, Form_pg_operator opform)
 {
 	/* opname is not a SQL identifier, so we should not quote it. */
 	cur_opname = NameStr(opform->oprname);
@@ -1179,7 +1179,7 @@ mysql_deparse_operator_name(StringInfo buf, Form_pg_operator opform)
 		opnspname = get_namespace_name(opform->oprnamespace);
 		/* Print fully qualified operator name. */
 		appendStringInfo(buf, "OPERATOR(%s.%s)",
-						 mysql_quote_identifier(opnspname, '`'), cur_opname);
+						 das_quote_identifier(opnspname, '`'), cur_opname);
 	}
 	else
 	{
@@ -1205,10 +1205,10 @@ mysql_deparse_operator_name(StringInfo buf, Form_pg_operator opform)
 }
 
 /*
- * Deparse IS [NOT] DISTINCT FROM into MySQL equivalent form.
+ * Deparse IS [NOT] DISTINCT FROM into DAS equivalent form.
  */
 static void
-mysql_deparse_distinct_expr(DistinctExpr *node, deparse_expr_cxt *context)
+das_deparse_distinct_expr(DistinctExpr *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	bool		is_not_distinct_op = context->is_not_distinct_op;
@@ -1216,7 +1216,7 @@ mysql_deparse_distinct_expr(DistinctExpr *node, deparse_expr_cxt *context)
 	Assert(list_length(node->args) == 2);
 
 	/*
-	 * In MySQL, <=> operator is equal to IS NOT DISTINCT FROM clause, so for
+	 * In DAS, <=> operator is equal to IS NOT DISTINCT FROM clause, so for
 	 * IS DISTINCT FROM clause, we add NOT before <=> operator.
 	 */
 	if (!is_not_distinct_op)
@@ -1239,7 +1239,7 @@ mysql_deparse_distinct_expr(DistinctExpr *node, deparse_expr_cxt *context)
  * around priority of operations, we always parenthesize the arguments.
  */
 static void
-mysql_deparse_scalar_array_op_expr(ScalarArrayOpExpr *node,
+das_deparse_scalar_array_op_expr(ScalarArrayOpExpr *node,
 								   deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
@@ -1316,7 +1316,7 @@ mysql_deparse_scalar_array_op_expr(ScalarArrayOpExpr *node,
 					elemtype == INT8OID || elemtype == OIDOID)
 					appendStringInfoString(buf, str);
 				else
-					mysql_deparse_string_literal(buf, str);
+					das_deparse_string_literal(buf, str);
 			}
 		}
 	}
@@ -1329,7 +1329,7 @@ mysql_deparse_scalar_array_op_expr(ScalarArrayOpExpr *node,
  * Deparse a RelabelType (binary-compatible cast) node.
  */
 static void
-mysql_deparse_relabel_type(RelabelType *node, deparse_expr_cxt *context)
+das_deparse_relabel_type(RelabelType *node, deparse_expr_cxt *context)
 {
 	deparseExpr(node->arg, context);
 }
@@ -1341,7 +1341,7 @@ mysql_deparse_relabel_type(RelabelType *node, deparse_expr_cxt *context)
  * into N-argument form, so we'd better be prepared to deal with that.
  */
 static void
-mysql_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context)
+das_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	const char *op = NULL;		/* keep compiler quiet */
@@ -1360,7 +1360,7 @@ mysql_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context)
 		case NOT_EXPR:
 			/*
 			 * Per transformAExprDistinct(), in the case of IS NOT DISTINCT
-			 * clause, it adds NOT on top of DistinctExpr.  However, in MySQL,
+			 * clause, it adds NOT on top of DistinctExpr.  However, in DAS,
 			 * <=> is equivalent to IS NOT DISTINCT FROM clause, so do not
 			 * append NOT here if it is a DistinctExpr.
 			 */
@@ -1393,7 +1393,7 @@ mysql_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context)
  * Deparse IS [NOT] NULL expression.
  */
 static void
-mysql_deparse_null_test(NullTest *node, deparse_expr_cxt *context)
+das_deparse_null_test(NullTest *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 
@@ -1415,7 +1415,7 @@ mysql_deparse_null_test(NullTest *node, deparse_expr_cxt *context)
  * do locally --- they need only have the same names.
  */
 static void
-mysql_print_remote_param(int paramindex, Oid paramtype, int32 paramtypmod,
+das_print_remote_param(int paramindex, Oid paramtype, int32 paramtypmod,
 						 deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
@@ -1424,7 +1424,7 @@ mysql_print_remote_param(int paramindex, Oid paramtype, int32 paramtypmod,
 }
 
 static void
-mysql_print_remote_placeholder(Oid paramtype, int32 paramtypmod,
+das_print_remote_placeholder(Oid paramtype, int32 paramtypmod,
 							   deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
@@ -1451,7 +1451,7 @@ mysql_print_remote_placeholder(Oid paramtype, int32 paramtypmod,
  * track of that would be a huge exercise.
  */
 bool
-mysql_is_builtin(Oid oid)
+das_is_builtin(Oid oid)
 {
 #if PG_VERSION_NUM >= 150000
 	return (oid < FirstGenbkiObjectId);
@@ -1481,7 +1481,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 	Oid			collation;
 	FDWCollateState state;
 
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) glob_cxt->foreignrel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) glob_cxt->foreignrel->fdw_private;
 
 	/* Need do nothing for empty subexpressions */
 	if (node == NULL)
@@ -1602,7 +1602,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 			{
 				FuncExpr   *fe = (FuncExpr *) node;
 
-				if (!mysql_check_remote_pushability(fpinfo->das->pushability_hash, fe->funcid))
+				if (!das_check_remote_pushability(fpinfo->das->pushability_hash, fe->funcid))
 					return false;
 
 				/*
@@ -1643,7 +1643,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 			{
 				OpExpr	   *oe = (OpExpr *) node;
 
-				if (!mysql_check_remote_pushability(fpinfo->das->pushability_hash, oe->opno))
+				if (!das_check_remote_pushability(fpinfo->das->pushability_hash, oe->opno))
 					return false;
 
 				/*
@@ -1680,7 +1680,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 				char	   *opname;
 				Node	   *arr = (Node *) lsecond(oe->args);
 
-				if (!mysql_check_remote_pushability(fpinfo->das->pushability_hash, oe->opno))
+				if (!das_check_remote_pushability(fpinfo->das->pushability_hash, oe->opno))
 					return false;
 
 				/*
@@ -1697,7 +1697,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 
 				/*
 				 * Don't push down ScalarArrayExprs (ANY and ALL), because
-				 * MySQL can't handle them.  Except when it's of the simple
+				 * DAS can't handle them.  Except when it's of the simple
 				 * "foo = ANY ('<constant>')" or "foo <> ALL ('<constant>')"
 				 * forms, and deparse that into "foo [NOT] IN (...)".
 				 */
@@ -1823,7 +1823,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 				if (agg->aggsplit != AGGSPLIT_SIMPLE)
 					return false;
 
-				if (!mysql_check_remote_pushability(fpinfo->das->pushability_hash, agg->aggfnoid))
+				if (!das_check_remote_pushability(fpinfo->das->pushability_hash, agg->aggfnoid))
 					return false;
 
 				/*
@@ -1847,15 +1847,15 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 						return false;
 				}
 
-				/* Aggregates with order are not supported on MySQL. */
+				/* Aggregates with order are not supported on DAS. */
 				if (agg->aggorder)
 					return false;
 
-				/* FILTER clause is not supported on MySQL. */
+				/* FILTER clause is not supported on DAS. */
 				if (agg->aggfilter)
 					return false;
 
-				/* VARIADIC not supported on MySQL. */
+				/* VARIADIC not supported on DAS. */
 				if (agg->aggvariadic)
 					return false;
 
@@ -1900,7 +1900,7 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
 	 * If result type of given expression is not built-in, it can't be sent to
 	 * remote because it might have incompatible semantics on remote side.
 	 */
-	if (check_type && !mysql_is_builtin(exprType(node)))
+	if (check_type && !das_is_builtin(exprType(node)))
 		return false;
 
 	/*
@@ -1956,12 +1956,12 @@ foreign_expr_walker(Node *node, foreign_glob_cxt *glob_cxt,
  * Returns true if given expr is safe to evaluate on the foreign server.
  */
 bool
-mysql_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr,
+das_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr,
 					  bool is_remote_cond)
 {
 	foreign_glob_cxt glob_cxt;
 	foreign_loc_cxt loc_cxt;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) (baserel->fdw_private);
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) (baserel->fdw_private);
 
 	/*
 	 * Check that the expression consists of nodes that are safe to execute
@@ -2008,7 +2008,7 @@ mysql_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr,
 }
 
 /*
- * mysql_append_conditions
+ * das_append_conditions
  * 		Deparse conditions from the provided list and append them to buf.
  *
  * The conditions in the list are assumed to be ANDed.  This function is used
@@ -2018,7 +2018,7 @@ mysql_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr,
  * or bare clauses.
  */
 static void
-mysql_append_conditions(List *exprs, deparse_expr_cxt *context)
+das_append_conditions(List *exprs, deparse_expr_cxt *context)
 {
 	ListCell   *lc;
 	bool		is_first = true;
@@ -2030,7 +2030,7 @@ mysql_append_conditions(List *exprs, deparse_expr_cxt *context)
 
 		/*
 		 * Extract clause from RestrictInfo, if required. See comments in
-		 * declaration of MySQLFdwRelationInfo for details.
+		 * declaration of DASFdwRelationInfo for details.
 		 */
 		if (IsA(expr, RestrictInfo))
 		{
@@ -2052,15 +2052,15 @@ mysql_append_conditions(List *exprs, deparse_expr_cxt *context)
 }
 
 /*
- * mysql_deparse_from_expr_for_rel
+ * das_deparse_from_expr_for_rel
  * 		Construct a FROM clause
  */
 void
-mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
+das_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 								RelOptInfo *foreignrel, bool use_alias,
 								List **params_list)
 {
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) foreignrel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) foreignrel->fdw_private;
 
 	if (IS_JOIN_REL(foreignrel))
 	{
@@ -2071,12 +2071,12 @@ mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 
 		/* Deparse outer relation */
 		initStringInfo(&join_sql_o);
-		mysql_deparse_from_expr_for_rel(&join_sql_o, root, rel_o, true,
+		das_deparse_from_expr_for_rel(&join_sql_o, root, rel_o, true,
 										params_list);
 
 		/* Deparse inner relation */
 		initStringInfo(&join_sql_i);
-		mysql_deparse_from_expr_for_rel(&join_sql_i, root, rel_i, true,
+		das_deparse_from_expr_for_rel(&join_sql_i, root, rel_i, true,
 										params_list);
 
 		/*
@@ -2085,7 +2085,7 @@ mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 		 * ((outer relation) <join type> (inner relation) ON (joinclauses)
 		 */
 		appendStringInfo(buf, "(%s %s JOIN %s ON ", join_sql_o.data,
-						 mysql_get_jointype_name(fpinfo->jointype),
+						 das_get_jointype_name(fpinfo->jointype),
 						 join_sql_i.data);
 
 		/* Append join clause; (TRUE) if no join clause */
@@ -2101,7 +2101,7 @@ mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 			context.is_not_distinct_op = false;
 
 			appendStringInfo(buf, "(");
-			mysql_append_conditions(fpinfo->joinclauses, &context);
+			das_append_conditions(fpinfo->joinclauses, &context);
 			appendStringInfo(buf, ")");
 		}
 		else
@@ -2125,7 +2125,7 @@ mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 		rel = table_open(rte->relid, NoLock);
 #endif
 
-		mysql_deparse_relation(buf, rel);
+		das_deparse_relation(buf, rel);
 
 		/*
 		 * Add a unique alias to avoid any conflict in relation names due to
@@ -2146,11 +2146,11 @@ mysql_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 }
 
 /*
- * mysql_get_jointype_name
+ * das_get_jointype_name
  * 		Output join name for given join type
  */
 extern const char *
-mysql_get_jointype_name(JoinType jointype)
+das_get_jointype_name(JoinType jointype)
 {
 	switch (jointype)
 	{
@@ -2173,11 +2173,11 @@ mysql_get_jointype_name(JoinType jointype)
 }
 
 /*
- * mysql_append_function_name
+ * das_append_function_name
  *		Deparses function name from given function oid.
  */
 static void
-mysql_append_function_name(Oid funcid, deparse_expr_cxt *context)
+das_append_function_name(Oid funcid, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	HeapTuple	proctup;
@@ -2192,8 +2192,8 @@ mysql_append_function_name(Oid funcid, deparse_expr_cxt *context)
 	/* Always print the function name */
 	proname = NameStr(procform->proname);
 
-	/* Translate PostgreSQL function into MySQL function */
-	proname = mysql_replace_function(NameStr(procform->proname));
+	/* Translate PostgreSQL function into DAS function */
+	proname = das_replace_function(NameStr(procform->proname));
 
 	appendStringInfoString(buf, proname);
 
@@ -2201,11 +2201,11 @@ mysql_append_function_name(Oid funcid, deparse_expr_cxt *context)
 }
 
 /*
- * mysql_deparse_aggref
+ * das_deparse_aggref
  *		Deparse an Aggref node.
  */
 static void
-mysql_deparse_aggref(Aggref *node, deparse_expr_cxt *context)
+das_deparse_aggref(Aggref *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 
@@ -2213,7 +2213,7 @@ mysql_deparse_aggref(Aggref *node, deparse_expr_cxt *context)
 	Assert(node->aggsplit == AGGSPLIT_SIMPLE);
 
 	/* Find aggregate name from aggfnoid which is a pg_proc entry. */
-	mysql_append_function_name(node->aggfnoid, context);
+	das_append_function_name(node->aggfnoid, context);
 	appendStringInfoChar(buf, '(');
 
 	/* Add DISTINCT */
@@ -2248,11 +2248,11 @@ mysql_deparse_aggref(Aggref *node, deparse_expr_cxt *context)
 }
 
 /*
- * mysql_append_groupby_clause
+ * das_append_groupby_clause
  * 		Deparse GROUP BY clause.
  */
 static void
-mysql_append_groupby_clause(List *tlist, deparse_expr_cxt *context)
+das_append_groupby_clause(List *tlist, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
 	Query	   *query = context->root->parse;
@@ -2279,17 +2279,17 @@ mysql_append_groupby_clause(List *tlist, deparse_expr_cxt *context)
 			appendStringInfoString(buf, ", ");
 		first = false;
 
-		mysql_deparse_sort_group_clause(grp->tleSortGroupRef, tlist,
+		das_deparse_sort_group_clause(grp->tleSortGroupRef, tlist,
 										true, context);
 	}
 }
 
 /*
- * mysql_deparse_sort_group_clause
+ * das_deparse_sort_group_clause
  * 		Appends a sort or group clause.
  */
 static Node *
-mysql_deparse_sort_group_clause(Index ref, List *tlist, bool force_colno,
+das_deparse_sort_group_clause(Index ref, List *tlist, bool force_colno,
 								deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
@@ -2312,7 +2312,7 @@ mysql_deparse_sort_group_clause(Index ref, List *tlist, bool force_colno,
 		 * BY 2", which will be misconstrued as a column position rather than
 		 * a constant.
 		 */
-		mysql_deparse_const((Const *) expr, context);
+		das_deparse_const((Const *) expr, context);
 	}
 	else if (!expr || IsA(expr, Var))
 		deparseExpr(expr, context);
@@ -2328,7 +2328,7 @@ mysql_deparse_sort_group_clause(Index ref, List *tlist, bool force_colno,
 }
 
 /*
- * mysql_is_foreign_param
+ * das_is_foreign_param
  * 		Returns true if given expr is something we'd have to send the
  * 		value of to the foreign server.
  *
@@ -2341,7 +2341,7 @@ mysql_deparse_sort_group_clause(Index ref, List *tlist, bool force_colno,
  * expression into).
  */
 bool
-mysql_is_foreign_param(PlannerInfo *root,
+das_is_foreign_param(PlannerInfo *root,
 					   RelOptInfo *baserel,
 					   Expr *expr)
 {
@@ -2355,7 +2355,7 @@ mysql_is_foreign_param(PlannerInfo *root,
 				/* It would have to be sent unless it's a foreign Var. */
 				Var		   *var = (Var *) expr;
 				Relids		relids;
-				MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) (baserel->fdw_private);
+				DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) (baserel->fdw_private);
 
 				if (IS_UPPER_REL(baserel))
 					relids = fpinfo->outerrel->relids;
@@ -2378,7 +2378,7 @@ mysql_is_foreign_param(PlannerInfo *root,
 }
 
 /*
- * mysql_append_orderby_clause
+ * das_append_orderby_clause
  *		Deparse ORDER BY clause defined by the given pathkeys.
  *
  * The clause should use Vars from context->scanrel if !has_final_sort, or from
@@ -2388,13 +2388,13 @@ mysql_is_foreign_param(PlannerInfo *root,
  * verified that there is one) and deparse it.
  */
 void
-mysql_append_orderby_clause(List *pathkeys, bool has_final_sort,
+das_append_orderby_clause(List *pathkeys, bool has_final_sort,
 							deparse_expr_cxt *context)
 {
 	ListCell   *lcell;
 	char	   *delim = " ";
 	StringInfo	buf = context->buf;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) context->foreignrel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) context->foreignrel->fdw_private;
 
 	appendStringInfo(buf, " ORDER BY");
 	foreach(lcell, pathkeys)
@@ -2410,12 +2410,12 @@ mysql_append_orderby_clause(List *pathkeys, bool has_final_sort,
 			 * By construction, context->foreignrel is the input relation to
 			 * the final sort.
 			 */
-			em = mysql_find_em_for_rel_target(context->root,
+			em = das_find_em_for_rel_target(context->root,
 											  pathkey->pk_eclass,
 											  context->foreignrel);
 		}
 		else
-			em = mysql_find_em_for_rel(context->root,
+			em = das_find_em_for_rel(context->root,
 									   pathkey->pk_eclass,
 									   context->scanrel);
 
@@ -2429,11 +2429,11 @@ mysql_append_orderby_clause(List *pathkeys, bool has_final_sort,
 
 		em_expr = em->em_expr;
 
-		sortby_dir = mysql_get_sortby_direction_string(em, pathkey, fpinfo->das->pushability_hash);
+		sortby_dir = das_get_sortby_direction_string(em, pathkey, fpinfo->das->pushability_hash);
 
 		appendStringInfoString(buf, delim);
 
-		mysql_append_orderby_suffix(em_expr, sortby_dir,
+		das_append_orderby_suffix(em_expr, sortby_dir,
 									exprType((Node *) em_expr),
 									pathkey->pk_nulls_first, context);
 
@@ -2442,11 +2442,11 @@ mysql_append_orderby_clause(List *pathkeys, bool has_final_sort,
 }
 
 /*
- * mysql_append_limit_clause
+ * das_append_limit_clause
  * 		Deparse LIMIT OFFSET clause.
  */
 static void
-mysql_append_limit_clause(deparse_expr_cxt *context)
+das_append_limit_clause(deparse_expr_cxt *context)
 {
 	PlannerInfo *root = context->root;
 	StringInfo	buf = context->buf;
@@ -2468,24 +2468,24 @@ mysql_append_limit_clause(deparse_expr_cxt *context)
 
 #if PG_VERSION_NUM >= 140000
 /*
- * mysql_deparse_truncate_sql
+ * das_deparse_truncate_sql
  * 		Construct a simple "TRUNCATE <relname>" statement.
  */
 void
-mysql_deparse_truncate_sql(StringInfo buf, Relation rel)
+das_deparse_truncate_sql(StringInfo buf, Relation rel)
 {
 	appendStringInfoString(buf, "TRUNCATE ");
 
-	mysql_deparse_relation(buf, rel);
+	das_deparse_relation(buf, rel);
 }
 #endif
 
 /*
- * mysql_append_orderby_suffix
+ * das_append_orderby_suffix
  * 		Append the ASC/DESC and NULLS FIRST/LAST parts of an ORDER BY clause.
  */
 static void
-mysql_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
+das_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
 							Oid sortcoltype, bool nulls_first,
 							deparse_expr_cxt *context)
 {
@@ -2515,7 +2515,7 @@ mysql_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
 	// deparseExpr(em_expr, context);
 
 	// /*
-	//  * Since MySQL doesn't have NULLS FIRST/LAST clause, we use IS NOT NULL or
+	//  * Since DAS doesn't have NULLS FIRST/LAST clause, we use IS NOT NULL or
 	//  * IS NULL instead.
 	//  */
 	// if (nulls_first)
@@ -2533,29 +2533,29 @@ mysql_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
 }
 
 /*
- * mysql_is_foreign_pathkey
+ * das_is_foreign_pathkey
  *		Returns true if it's safe to push down the sort expression described by
  *		'pathkey' to the foreign server.
  */
 bool
-mysql_is_foreign_pathkey(PlannerInfo *root, RelOptInfo *baserel,
+das_is_foreign_pathkey(PlannerInfo *root, RelOptInfo *baserel,
 						 PathKey *pathkey)
 {
 	EquivalenceMember *em = NULL;
 	EquivalenceClass *pathkey_ec = pathkey->pk_eclass;
-	MySQLFdwRelationInfo *fpinfo = (MySQLFdwRelationInfo *) baserel->fdw_private;
+	DASFdwRelationInfo *fpinfo = (DASFdwRelationInfo *) baserel->fdw_private;
 
 	/*
-	 * mysql_is_foreign_expr would detect volatile expressions as well, but
+	 * das_is_foreign_expr would detect volatile expressions as well, but
 	 * checking ec_has_volatile here saves some cycles.
 	 */
 	if (pathkey_ec->ec_has_volatile)
 		return false;
 
 	/* can push if a suitable EC member exists */
-	em = mysql_find_em_for_rel(root, pathkey_ec, baserel);
+	em = das_find_em_for_rel(root, pathkey_ec, baserel);
 
-	if (mysql_get_sortby_direction_string(em, pathkey, fpinfo->das->pushability_hash) == NULL)
+	if (das_get_sortby_direction_string(em, pathkey, fpinfo->das->pushability_hash) == NULL)
 		return false;
 
 	return true;

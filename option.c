@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * option.c
- * 		FDW option handling for mysql_fdw
+ * 		FDW option handling for das_fdw
  *
  * Portions Copyright (c) 2012-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 2004-2024, EnterpriseDB Corporation.
@@ -21,24 +21,24 @@
 #include "commands/defrem.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "mysql_fdw.h"
+#include "das_fdw.h"
 #include "utils/lsyscache.h"
 
-#include "mysql_pushability.h"
+#include "das_pushability.h"
 
 /*
  * Describes the valid options for objects that use this wrapper.
  */
-struct MySQLFdwOption
+struct DASFdwOption
 {
 	const char *optname;
 	Oid			optcontext;		/* Oid of catalog in which option may appear */
 };
 
 /*
- * Valid options for mysql_fdw.
+ * Valid options for das_fdw.
  */
-static struct MySQLFdwOption valid_options[] =
+static struct DASFdwOption valid_options[] =
 {
 	/* Connection options */
 	{"das_url", ForeignServerRelationId},
@@ -58,9 +58,9 @@ static struct MySQLFdwOption valid_options[] =
 	{NULL, InvalidOid}
 };
 
-extern Datum mysql_fdw_validator(PG_FUNCTION_ARGS);
+extern Datum das_fdw_validator(PG_FUNCTION_ARGS);
 
-PG_FUNCTION_INFO_V1(mysql_fdw_validator);
+PG_FUNCTION_INFO_V1(das_fdw_validator);
 
 /*
  * Validate the generic options given to a FOREIGN DATA WRAPPER, SERVER,
@@ -69,23 +69,23 @@ PG_FUNCTION_INFO_V1(mysql_fdw_validator);
  * Raise an ERROR if the option or its value is considered invalid.
  */
 Datum
-mysql_fdw_validator(PG_FUNCTION_ARGS)
+das_fdw_validator(PG_FUNCTION_ARGS)
 {
 	List	   *options_list = untransformRelOptions(PG_GETARG_DATUM(0));
 	Oid			catalog = PG_GETARG_OID(1);
 	ListCell   *cell;
 
 // 	/*
-// 	 * Check that only options supported by mysql_fdw, and allowed for the
+// 	 * Check that only options supported by das_fdw, and allowed for the
 // 	 * current object type, are given.
 // 	 */
 	foreach(cell, options_list)
 	{
 		DefElem    *def = (DefElem *) lfirst(cell);
 
-// 		if (!mysql_is_valid_option(def->defname, catalog))
+// 		if (!das_is_valid_option(def->defname, catalog))
 // 		{
-// 			struct MySQLFdwOption *opt;
+// 			struct DASFdwOption *opt;
 // 			StringInfoData buf;
 
 // 			/*
@@ -156,9 +156,9 @@ mysql_fdw_validator(PG_FUNCTION_ARGS)
  * context is the Oid of the catalog holding the object the option is for.
  */
 bool
-mysql_is_valid_option(const char *option, Oid context)
+das_is_valid_option(const char *option, Oid context)
 {
-	struct MySQLFdwOption *opt;
+	struct DASFdwOption *opt;
 
 	for (opt = valid_options; opt->optname; opt++)
 	{
@@ -170,21 +170,21 @@ mysql_is_valid_option(const char *option, Oid context)
 }
 
 /*
- * Fetch the options for a mysql_fdw foreign table.
+ * Fetch the options for a das_fdw foreign table.
  */
-mysql_opt *
-mysql_get_options(Oid foreignoid, bool is_foreigntable)
+das_opt *
+das_get_options(Oid foreignoid, bool is_foreigntable)
 {
 	ForeignTable *f_table;
 	ForeignServer *f_server;
 	UserMapping *f_mapping;
 	List	   *options;
 	ListCell   *lc;
-	mysql_opt  *opt;
+	das_opt  *opt;
 	List	   *options_keys = NIL;
 	List	   *options_values = NIL;
 
-	opt = (mysql_opt *) palloc0(sizeof(mysql_opt));
+	opt = (das_opt *) palloc0(sizeof(das_opt));
 
 	/*
 	 * Extract options from FDW objects.
@@ -204,11 +204,11 @@ mysql_get_options(Oid foreignoid, bool is_foreigntable)
 
 	options = NIL;
 
-	options = mysql_list_concat(options, f_server->options);
-	options = mysql_list_concat(options, f_mapping->options);
+	options = das_list_concat(options, f_server->options);
+	options = das_list_concat(options, f_mapping->options);
 
 	if (f_table)
-		options = mysql_list_concat(options, f_table->options);
+		options = das_list_concat(options, f_table->options);
 
 	// opt->use_remote_estimate = false;
 	// opt->reconnect = false;
@@ -259,8 +259,8 @@ mysql_get_options(Oid foreignoid, bool is_foreigntable)
 		// if (strcmp(def->defname, "character_set") == 0)
 		// 	opt->character_set = defGetString(def);
 
-		// if (strcmp(def->defname, "mysql_default_file") == 0)
-		// 	opt->mysql_default_file = defGetString(def);
+		// if (strcmp(def->defname, "das_default_file") == 0)
+		// 	opt->das_default_file = defGetString(def);
 
 		// if (strcmp(def->defname, "sql_mode") == 0)
 		// 	opt->sql_mode = defGetString(def);
@@ -304,7 +304,7 @@ mysql_get_options(Oid foreignoid, bool is_foreigntable)
 	// 	opt->svr_address = "127.0.0.1";
 
 	// if (!opt->svr_port)
-	// 	opt->svr_port = MYSQL_SERVER_PORT;
+	// 	opt->svr_port = das_SERVER_PORT;
 
 	/*
 	 * When we don't have a table name or database name provided in the
@@ -322,11 +322,11 @@ mysql_get_options(Oid foreignoid, bool is_foreigntable)
 
 	/* Default value for fetch_size */
 	// if (!opt->fetch_size)
-	// 	opt->fetch_size = MYSQL_PREFETCH_ROWS;
+	// 	opt->fetch_size = das_PREFETCH_ROWS;
 
 	/* Default value for character_set */
 	// if (!opt->character_set)
-	// 	opt->character_set = MYSQL_AUTODETECT_CHARSET_NAME;
+	// 	opt->character_set = das_AUTODETECT_CHARSET_NAME;
 	/* Special value provided for existing behavior */
 	// else if (strcmp(opt->character_set, "PGDatabaseEncoding") == 0)
 	// 	opt->character_set = (char *) GetDatabaseEncodingName();

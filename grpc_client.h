@@ -9,10 +9,10 @@ extern "C" {
 #include "nodes/pg_list.h"
 
 /*
- * Options structure to store the MySQL
+ * Options structure to store the DAS
  * server information
  */
-typedef struct mysql_opt
+typedef struct das_opt
 {
 	List* option_keys;
 	List* option_values;
@@ -21,20 +21,20 @@ typedef struct mysql_opt
 	char       *das_url;
     char       *das_type;
 	char       *das_id;
-} mysql_opt;
+} das_opt;
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Registration Service
 //////////////////////////////////////////////////////////////////////////////////////////
 
 /* Register DAS */
-char* register_das(mysql_opt* opts);
+char* register_das(das_opt* opts);
 
 /* Unregister DAS */
-void unregister_das(mysql_opt* opts);
+void unregister_das(das_opt* opts);
 
 /* Get supported operations */
-char** get_operations_supported(mysql_opt* opts, bool* orderby_supported, bool* join_supported, bool* aggregation_supported, int* pushability_len);
+char** get_operations_supported(das_opt* opts, bool* orderby_supported, bool* join_supported, bool* aggregation_supported, int* pushability_len);
 void free_operations_supported(char** pushability_list, int pushability_len);
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -42,18 +42,18 @@ void free_operations_supported(char** pushability_list, int pushability_len);
 //////////////////////////////////////////////////////////////////////////////////////////
 
 /* Get table definitions */
-char** get_table_definitions(mysql_opt* opts, const char* server_name, int* num_tables);
+char** get_table_definitions(das_opt* opts, const char* server_name, int* num_tables);
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // SQL Query Service
 //////////////////////////////////////////////////////////////////////////////////////////
 
-void get_query_estimate(mysql_opt* opts, const char* sql, double* rows, double* width);
+void get_query_estimate(das_opt* opts, const char* sql, double* rows, double* width);
 
 typedef struct SqlQueryIterator SqlQueryIterator;
 
 /* Initialize the iterator */
-SqlQueryIterator* sql_query_iterator_init(mysql_opt* opts, const char* sql, const char* plan_id);
+SqlQueryIterator* sql_query_iterator_init(das_opt* opts, const char* sql, const char* plan_id);
 
 /* Get the next Rows */
 bool sql_query_iterator_next(SqlQueryIterator* iterator, int* attnums, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods);
@@ -71,16 +71,16 @@ void sql_query_iterator_close(SqlQueryIterator* iterator);
 // it must take the thing that register_das needs
 
 /* Get the unique column name for modify operations */
-char* unique_column(mysql_opt* opts, const char* table_name);
+char* unique_column(das_opt* opts, const char* table_name);
 
 /* Insert a row into the table */
-void insert_row(mysql_opt* opts, const char* table_name, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods);
+void insert_row(das_opt* opts, const char* table_name, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods);
 
 /* Update a row in the table */
-void update_row(mysql_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods);
+void update_row(das_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods, int num_columns, int* attnums, char **attnames, Datum* dvalues, bool* nulls, Oid* pgtypes, int32* pgtypmods);
 
 /* Delete a row from the table */
-void delete_row(mysql_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods);
+void delete_row(das_opt* opts, const char* table_name, Datum k_value, Oid k_pgtype, int32 k_pgtypmods);
 
 #ifdef __cplusplus
 }
