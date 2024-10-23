@@ -139,7 +139,9 @@ extern Datum das_fdw_handler(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(das_fdw_handler);
 PG_FUNCTION_INFO_V1(das_fdw_version);
-// PG_FUNCTION_INFO_V1(das_display_pushdown_list);
+
+/* Generic entrypoint function for DAS function */
+PG_FUNCTION_INFO_V1(das_function_entrypoint);
 
 /* Global query counter */
 static pg_atomic_uint64 global_query_counter;
@@ -327,6 +329,65 @@ das_fdw_exit(int code, Datum arg)
 {
 	// TODO (msb): Clean/close connections?
 	// das_cleanup_connection();
+}
+
+PG_FUNCTION_INFO_V1(dynamic_entrypoint);
+
+/*
+ * Entrypoint for DAS functions
+ *
+ * Register as e.g.:
+ * CREATE OR REPLACE FUNCTION dynamic_func_1(int, text)
+ * RETURNS void
+ * LANGUAGE c
+ * AS 'das_fdw', 'das_function_entrypoint';
+ */
+Datum
+das_function_entrypoint(PG_FUNCTION_ARGS)
+{
+    Oid function_oid = fcinfo->flinfo->fn_oid;
+    char *function_name;
+    int i;
+
+    /* Get the name of the function that was called */
+    function_name = get_func_name(function_oid);
+
+    if (function_name == NULL)
+        elog(ERROR, "Could not retrieve function name");
+
+    elog(INFO, "Function called: %s (OID: %u)", function_name, function_oid);
+
+    /* Iterate over the arguments */
+    for (i = 0; i < PG_NARGS(); i++)
+    {
+        if (PG_ARGISNULL(i))
+        {
+            elog(INFO, "Argument %d is NULL", i);
+            continue;
+        }
+
+        /* Handle arguments based on type */
+        switch (get_fn_expr_argtype(fcinfo->flinfo, i))
+        {
+            case INT4OID:  /* Integer argument */
+                elog(INFO, "Argument %d is INT4: %d", i, PG_GETARG_INT32(i));
+                break;
+
+            case TEXTOID:  /* Text argument */
+                elog(INFO, "Argument %d is TEXT: %s", i, text_to_cstring(PG_GETARG_TEXT_P(i)));
+                break;
+
+            case FLOAT8OID:  /* Float argument */
+                elog(INFO, "Argument %d is FLOAT8: %f", i, PG_GETARG_FLOAT8(i));
+                break;
+
+            /* Add more types as needed */
+            default:
+                elog(ERROR, "Unsupported argument type: %d", get_fn_expr_argtype(fcinfo->flinfo, i));
+        }
+    }
+
+    PG_RETURN_VOID();
 }
 
 /*
