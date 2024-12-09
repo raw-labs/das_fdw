@@ -9,6 +9,7 @@ MODULE_big = das_fdw
 # Versions of the protobuf
 RAW_VERSION = v0.39.0
 DAS_VERSION = v0.1.2
+PG_CFLAGS = -O0 -g
 
 # Protobuf files to download with their respective paths
 PROTO_DIR = protos
@@ -59,7 +60,7 @@ PROTO_OBJS = \
 # Protobuf/gRPC settings
 GRPC_CLIENT_OBJS = grpc_client.o # Our interface between C++ and C code for gRPC
 PG_CPPFLAGS += -I$(PROTO_DIR)
-PG_CXXFLAGS += --std=c++17 $(shell pkg-config --cflags grpc++) $(shell pkg-config --cflags protobuf) -I$(shell pg_config --cppflags) -I$(shell pg_config --includedir-server) -I$(PROTO_DIR)
+PG_CXXFLAGS += --std=c++17 $(PG_CFLAGS) $(shell pkg-config --cflags grpc++) $(shell pkg-config --cflags protobuf) -I$(shell pg_config --cppflags) -I$(shell pg_config --includedir-server) -I$(PROTO_DIR)
 SHLIB_LINK += $(shell pkg-config --libs grpc++ grpc protobuf) -L$(shell pg_config --pkglibdir) $(shell pg_config --ldflags) $(shell pg_config --libs)
 
 # # DAS settings
@@ -67,6 +68,7 @@ SHLIB_LINK += $(shell pkg-config --libs grpc++ grpc protobuf) -L$(shell pg_confi
 
 # MacOS?
 SHLIB_LINK += -lc++
+
 UNAME = uname
 OS := $(shell $(UNAME))
 ifeq ($(OS), Darwin)

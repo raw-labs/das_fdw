@@ -617,8 +617,9 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
 		Oid			pgtype = TupleDescAttr(tupleDescriptor, attnum)->atttypid;
 		int32		pgtypmod = TupleDescAttr(festate->attinmeta->tupdesc, attnum)->atttypmod;
 
-		if (TupleDescAttr(tupleDescriptor, attnum)->attisdropped)
+		if (TupleDescAttr(tupleDescriptor, attnum)->attisdropped) {
 			continue;
+        }
 
 		festate->attnums[bindnum] = attnum;
 		festate->pgtypes[bindnum] = pgtype;

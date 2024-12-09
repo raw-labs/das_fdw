@@ -30,6 +30,8 @@ using grpc::Channel;
 using grpc::ClientContext;
 using grpc::Status;
 using com::rawlabs::protocol::raw::Type;
+using com::rawlabs::protocol::raw::AttrType;
+using com::rawlabs::protocol::raw::RecordType;
 using com::rawlabs::protocol::raw::Value;
 using com::rawlabs::protocol::raw::ValueList;
 using com::rawlabs::protocol::das::services::RegistrationService;
@@ -73,9 +75,9 @@ struct TypeInfo {
     bool nullable;
 };
 
-Datum ConvertValueListToArray(const ValueList& value_list);
+Datum ConvertValueListToArray(const ValueList& value_list, Oid elem_type);
 
-JsonbValue* ValueToJsonbValue(const Value& value, JsonbParseState **pstate);
+void ValueToJsonbValue(const Value& value, JsonbParseState **pstate, JsonbValue** r);
 
 TypeInfo GetTypeInfo(const Type& my_type) {
     std::string inner_type;
@@ -113,13 +115,21 @@ TypeInfo GetTypeInfo(const Type& my_type) {
         case Type::kInterval:
             return { "interval", my_type.interval().nullable() };            
         case Type::kRecord:
+            // Make it a JSONB if any field isn't a string
+            for (AttrType a : my_type.record().atts()) {
+                Type field_type = a.tipe();
+                if (field_type.type_case() != Type::kString) {
+                    return { "jsonb", my_type.record().nullable() };
+                }
+            }
+            // We want HSTORE in principle, but adding HSTORE support here is still TODO
             return { "jsonb", my_type.record().nullable() };
         case Type::kList:
             inner_type = GetTypeInfo(my_type.list().innertype()).sql_type;
             return { inner_type + "[]", my_type.list().nullable() };
         case Type::kAny:
             // AnyType does not have a nullable flag
-            return { "any", false };
+            return { "jsonb", false };
         default:
             elog(ERROR, "Unsupported type: %d", my_type.type_case());
     }
@@ -202,165 +212,258 @@ char* TableDefinitionToCreateTableSQL(const TableDefinition& definition, const c
 
 void ValueToDatum(const Value& value, Oid pgtyp, int32 pgtypmod, Datum* datum, bool* null)
 {
-    elog(WARNING, "ValueToDatum: %d", value.value_case());
+    elog(WARNING, "ValueToDatum: %d %d", value.value_case(), pgtyp);
     if (value.has_null()) {
         *null = true;
         *datum = PointerGetDatum(NULL);
     } else {
         *null = false;
-        if (value.has_byte()) {
-            *datum = Int16GetDatum(value.byte().v());
-        } else if (value.has_short_()) {
-            *datum = Int16GetDatum(value.short_().v());
-        } else if (value.has_int_()) {
-            *datum = Int32GetDatum(value.int_().v());
-        } else if (value.has_long_()) {
-            *datum = Int64GetDatum(value.long_().v());
-        } else if (value.has_float_()) {
-            *datum = Float4GetDatum(value.float_().v());
-        } else if (value.has_double_()) {
-            *datum = Float8GetDatum(value.double_().v());
-        } else if (value.has_decimal()) {
-            *datum = DirectFunctionCall1(numeric_in, CStringGetDatum(value.decimal().v().c_str()));
-        } else if (value.has_string()) {
-            char *dup_str = pstrdup(value.string().v().c_str());
-            text* txt = cstring_to_text(dup_str);
-            *datum = PointerGetDatum(txt);
-        } else if (value.has_bool_()) {
-            *datum = BoolGetDatum(value.bool_().v());
-        } else if (value.has_binary()) {
-            *datum = PointerGetDatum(NULL);
-        } else if (value.has_date()) {
-            auto date_obj = value.date();
-            int32_t year = date_obj.year();
-            int32_t month = date_obj.month();
-            int32_t day = date_obj.day();
+        if (pgtyp == INT2OID) {
+            // byte or short
+            if (value.has_byte()) {
+                *datum = Int16GetDatum(value.byte().v());
+            } else if (value.has_short_()) {
+                *datum = Int16GetDatum(value.short_().v());
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == INT4OID) {
+            if (value.has_int_()) {
+                *datum = Int32GetDatum(value.int_().v());
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == INT8OID) {
+            if (value.has_long_()) {
+                *datum = Int64GetDatum(value.long_().v());
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == FLOAT4OID) {
+            if (value.has_float_()) {
+                *datum = Float4GetDatum(value.float_().v());
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == FLOAT8OID) {
+            if (value.has_double_()) {
+                *datum = Float8GetDatum(value.double_().v());
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == NUMERICOID) {
+            if (value.has_decimal()) {
+                *datum = DirectFunctionCall1(numeric_in, CStringGetDatum(value.decimal().v().c_str()));
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == TEXTOID) {
+            if (value.has_string()) {
+                char *dup_str = pstrdup(value.string().v().c_str());
+                text* txt = cstring_to_text(dup_str);
+                *datum = PointerGetDatum(txt);
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == BOOLOID) {
+            if (value.has_bool_()) {
+                *datum = BoolGetDatum(value.bool_().v());
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == BYTEAOID) {
+            if (value.has_binary()) {
+                const char *binary_data = value.binary().v().c_str();
+                size_t value_size = value.binary().v().size();
+                bytea *bin_data = (bytea *) palloc(value_size + VARHDRSZ);
+                SET_VARSIZE(bin_data, value_size + VARHDRSZ);
+                memcpy(VARDATA(bin_data), binary_data, value_size);
+                *datum = PointerGetDatum(bin_data);
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == DATEOID) {
+            if (value.has_date()) {
+                auto date_obj = value.date();
+                int32_t year = date_obj.year();
+                int32_t month = date_obj.month();
+                int32_t day = date_obj.day();
 
-            DateADT date = date2j(year, month, day);
+                DateADT date = date2j(year, month, day) - POSTGRES_EPOCH_JDATE;
 
-            *datum = Int32GetDatum(date);
-        } else if (value.has_time()) {
+                *datum = Int32GetDatum(date);
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == TIMEOID) {
+            if (value.has_time()) {
 
-            auto time_obj = value.time();
+                auto time_obj = value.time();
 
-            int32_t hour = time_obj.hour();
-            int32_t minute = time_obj.minute();
-            int32_t second = time_obj.second();
-            int32_t nano = time_obj.nano();
+                int32_t hour = time_obj.hour();
+                int32_t minute = time_obj.minute();
+                int32_t second = time_obj.second();
+                int32_t nano = time_obj.nano();
 
-            int64_t microseconds = ((int64_t) hour * USECS_PER_HOUR) +
-                                    ((int64_t) minute * USECS_PER_MINUTE) +
-                                    ((int64_t) second * USECS_PER_SEC) +
-                                    ((int64_t) nano / 1000);
+                int64_t microseconds = ((int64_t) hour * USECS_PER_HOUR) +
+                                        ((int64_t) minute * USECS_PER_MINUTE) +
+                                        ((int64_t) second * USECS_PER_SEC) +
+                                        ((int64_t) nano / 1000);
 
-            TimeADT time_value = (TimeADT) microseconds;
+                TimeADT time_value = (TimeADT) microseconds;
 
-            *datum = Int64GetDatum(time_value);
-        } else if (value.has_timestamp()) {
-            auto timestamp_obj = value.timestamp();
+                *datum = Int64GetDatum(time_value);
+            } else {
+                elog(ERROR, "unsupported");
+            }
+        } else if (pgtyp == TIMESTAMPOID) {
+            if (value.has_timestamp()) {
+                auto timestamp_obj = value.timestamp();
 
-            int32_t year = timestamp_obj.year();
-            int32_t month = timestamp_obj.month();
-            int32_t day = timestamp_obj.day();
+                int32_t year = timestamp_obj.year();
+                int32_t month = timestamp_obj.month();
+                int32_t day = timestamp_obj.day();
 
-            int32_t hour = timestamp_obj.hour();
-            int32_t minute = timestamp_obj.minute();
-            int32_t second = timestamp_obj.second();
-            int32_t nano = timestamp_obj.nano();
+                int32_t hour = timestamp_obj.hour();
+                int32_t minute = timestamp_obj.minute();
+                int32_t second = timestamp_obj.second();
+                int32_t nano = timestamp_obj.nano();
 
-            DateADT date = date2j(year, month, day);
+                DateADT date = date2j(year, month, day) - POSTGRES_EPOCH_JDATE;
 
-            int64_t microseconds = ((int64_t) hour * USECS_PER_HOUR) +
-                                    ((int64_t) minute * USECS_PER_MINUTE) +
-                                    ((int64_t) second * USECS_PER_SEC) +
-                                    ((int64_t) nano / 1000);
+                int64_t microseconds = ((int64_t) hour * USECS_PER_HOUR) +
+                                        ((int64_t) minute * USECS_PER_MINUTE) +
+                                        ((int64_t) second * USECS_PER_SEC) +
+                                        ((int64_t) nano / 1000);
 
-            // Assign to TimestampTz (microseconds since epoch)
-            // Note: This simplistic conversion assumes date2j returns days since a fixed epoch
-            // Adjust the calculation based on the actual definition of date2j and TimestampTz
-            TimestampTz timestamp_value = ((TimestampTz) date * USECS_PER_DAY) + microseconds;
+                // Assign to TimestampTz (microseconds since epoch)
+                // Note: This simplistic conversion assumes date2j returns days since a fixed epoch
+                // Adjust the calculation based on the actual definition of date2j and TimestampTz
+                TimestampTz timestamp_value = ((TimestampTz) date * USECS_PER_DAY) + microseconds;
 
-            *datum = TimestampTzGetDatum(timestamp_value);
-        } else if (value.has_interval()) {
-            auto interval_obj = value.interval();
+                *datum = TimestampTzGetDatum(timestamp_value);
+            }
+        } else if (pgtyp == INTERVALOID) {
+            if (value.has_interval()) {
+                auto interval_obj = value.interval();
 
-            Interval* v = (Interval*) palloc(sizeof(Interval));
+                Interval* v = (Interval*) palloc(sizeof(Interval));
 
-            v->time = ((int64_t) interval_obj.hours() * USECS_PER_HOUR) +
-                    ((int64_t) interval_obj.minutes() * USECS_PER_MINUTE) +
-                    ((int64_t) interval_obj.seconds() * USECS_PER_SEC) +
-                    ((int64_t) interval_obj.millis() * USECS_PER_MSEC);
+                v->time = ((int64_t) interval_obj.hours() * USECS_PER_HOUR) +
+                        ((int64_t) interval_obj.minutes() * USECS_PER_MINUTE) +
+                        ((int64_t) interval_obj.seconds() * USECS_PER_SEC) +
+                        ((int64_t) interval_obj.millis() * USECS_PER_MSEC);
 
-            v->day = interval_obj.days();
-            v->month = interval_obj.months();
-            // TODO (msb): This is broken. Does not handle weeks or years!
-            // v->year = interval_obj.years();
+                v->day = interval_obj.days();
+                v->month = interval_obj.months();
+                // TODO (msb): This is broken. Does not handle weeks or years!
+                // v->year = interval_obj.years();
 
-            *datum = PointerGetDatum(v);
-        } else if (value.has_record()) {
+                *datum = PointerGetDatum(v);
+            }
+        } else if (pgtyp == JSONBOID) {
             JsonbParseState *state = NULL;
-            JsonbValue *res = ValueToJsonbValue(value, &state);
+            JsonbValue *res = NULL;
+            ValueToJsonbValue(value, &state, &res);
             Jsonb *jsonb = JsonbValueToJsonb(res);
             *datum = JsonbPGetDatum(jsonb);
-        } else if (value.has_list()) {
-            *datum = ConvertValueListToArray(value.list());
+        } else if (pgtyp == BOOLARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), BOOLOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == INT2ARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), INT2OID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == INT4ARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), INT4OID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == INT8ARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), INT8OID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == FLOAT4ARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), FLOAT4OID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == FLOAT8ARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), FLOAT8OID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == NUMERICARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), NUMERICOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == TEXTARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), TEXTOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == DATEARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), DATEOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == TIMEARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), TIMEOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == TIMESTAMPARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), TIMESTAMPOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == INTERVALARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), INTERVALOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+        } else if (pgtyp == JSONBARRAYOID) {
+            if (value.has_list()) {
+                *datum = ConvertValueListToArray(value.list(), JSONBOID);
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
         } else {
             elog(ERROR, "Unsupported value type: %d", value.value_case());
         }
     }
 }
 
-Datum ConvertValueListToArray(const ValueList& value_list)
+Datum ConvertValueListToArray(const ValueList& value_list, Oid elem_type)
 {
     int nelems = value_list.values_size();
 
     // Default to text[] for empty arrays
     if (nelems == 0) {
-        ArrayType *empty_array = construct_empty_array(TEXTOID);
+        ArrayType *empty_array = construct_empty_array(elem_type);
         return PointerGetDatum(empty_array);
     }
 
-    // Determine the element type based on the first element
-    Oid elem_type = InvalidOid;
     int16 elem_len;
     bool elem_byval;
     char elem_align;
-
-    const Value& first_value = value_list.values(0);
-
-    // Map the first value's type to a PostgreSQL type Oid
-    if (first_value.has_byte() || first_value.has_short_()) {
-        elem_type = INT2OID;
-    } else if (first_value.has_int_()) {
-        elem_type = INT4OID;
-    } else if (first_value.has_long_()) {
-        elem_type = INT8OID;
-    } else if (first_value.has_float_()) {
-        elem_type = FLOAT4OID;
-    } else if (first_value.has_double_()) {
-        elem_type = FLOAT8OID;
-    } else if (first_value.has_decimal()) {
-        elem_type = NUMERICOID;
-    } else if (first_value.has_string()) {
-        elem_type = TEXTOID;
-    } else if (first_value.has_bool_()) {
-        elem_type = BOOLOID;
-    } else if (first_value.has_binary()) {
-        elem_type = BYTEAOID;
-    } else if (first_value.has_date()) {
-        elem_type = DATEOID;
-    } else if (first_value.has_time()) {
-        elem_type = TIMEOID;
-    } else if (first_value.has_timestamp()) {
-        elem_type = TIMESTAMPOID;
-    } else if (first_value.has_interval()) {
-        elem_type = INTERVALOID;
-    } else if (first_value.has_null()) {
-        // If the first element is null, default to text[]
-        elem_type = TEXTOID;
-    } else {
-        elog(ERROR, "Unsupported or unrecognized type in list");
-    }
 
     // Get type information
     get_typlenbyvalalign(elem_type, &elem_len, &elem_byval, &elem_align);
@@ -392,182 +495,135 @@ Datum ConvertValueListToArray(const ValueList& value_list)
     return PointerGetDatum(result_array);
 }
 
-JsonbValue* ValueToJsonbValue(const Value& value, JsonbParseState **pstate)
+void ValueToJsonbValue(const Value& value, JsonbParseState **pstate, JsonbValue** r)
 {
-    if (value.has_null()) {
-        JsonbValue v;
-        v.type = jbvNull;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_byte()) {
-        Datum numDatum = DirectFunctionCall1(int2_numeric, Int16GetDatum(value.byte().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_short_()) {
-        Datum numDatum = DirectFunctionCall1(int2_numeric, Int16GetDatum(value.short_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_int_()) {
-        Datum numDatum = DirectFunctionCall1(int4_numeric, Int32GetDatum(value.int_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_long_()) {
-        Datum numDatum = DirectFunctionCall1(int8_numeric, Int64GetDatum(value.long_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_float_()) {
-        Datum numDatum = DirectFunctionCall1(float4_numeric, Float4GetDatum(value.float_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_double_()) {
-        Datum numDatum = DirectFunctionCall1(float8_numeric, Float8GetDatum(value.double_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_decimal()) {
-        Datum numDatum = DirectFunctionCall1(numeric_in, CStringGetDatum(value.decimal().v().c_str()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_string()) {
-        JsonbValue v;
-        v.type = jbvString;
-        std::string str = value.string().v();
-        v.val.string.val = pstrdup(str.c_str());
-        v.val.string.len = str.length();
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_bool_()) {
-        JsonbValue v;
-        v.type = jbvBool;
-        v.val.boolean = value.bool_().v();
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_binary()) {
-        // Represent binary data as base64 string using pg_b64_encode
-        std::string binary_data = value.binary().v();
-        int binary_len = binary_data.length();
-
-        // Calculate the length required for the base64 encoded data
-        size_t encoded_len = pg_b64_enc_len(binary_len);
-
-        // Allocate memory for the encoded data
-        char *encoded = (char *) palloc(encoded_len + 1); // +1 for null terminator
-
-        // Encode the binary data
-        int actual_encoded_len = pg_b64_encode((const char *) binary_data.c_str(), binary_len, encoded, encoded_len);
-
-        if (actual_encoded_len < 0) {
-            elog(ERROR, "Error encoding binary data to base64");
-        }
-
-        // Null-terminate the encoded string
-        encoded[actual_encoded_len] = '\0';
-
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = encoded;
-        v.val.string.len = actual_encoded_len;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_date()) {
-        auto date_obj = value.date();
-        char buf[11]; // YYYY-MM-DD\0
-        snprintf(buf, sizeof(buf), "%04d-%02d-%02d", date_obj.year(), date_obj.month(), date_obj.day());
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(buf);
-        v.val.string.len = strlen(buf);
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_time()) {
-        auto time_obj = value.time();
-        char buf[13]; // HH:MM:SS\0
-        snprintf(buf, sizeof(buf), "%02d:%02d:%02d", time_obj.hour(), time_obj.minute(), time_obj.second());
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(buf);
-        v.val.string.len = strlen(buf);
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_timestamp()) {
-        auto timestamp_obj = value.timestamp();
-        char buf[30]; // YYYY-MM-DDTHH:MM:SS.ssssssZ\0
-        snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%06dZ",
-                 timestamp_obj.year(), timestamp_obj.month(), timestamp_obj.day(),
-                 timestamp_obj.hour(), timestamp_obj.minute(), timestamp_obj.second(),
-                 timestamp_obj.nano() / 1000);
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(buf);
-        v.val.string.len = strlen(buf);
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_interval()) {
-        auto interval_obj = value.interval();
-        std::ostringstream oss;
-        oss << "P";
-        if (interval_obj.years() != 0) oss << interval_obj.years() << "Y";
-        if (interval_obj.months() != 0) oss << interval_obj.months() << "M";
-        if (interval_obj.weeks() != 0) oss << interval_obj.weeks() << "W";
-        if (interval_obj.days() != 0) oss << interval_obj.days() << "D";
-        if (interval_obj.hours() != 0 || interval_obj.minutes() != 0 || interval_obj.seconds() != 0 || interval_obj.millis() != 0) {
-            oss << "T";
-            if (interval_obj.hours() != 0) oss << interval_obj.hours() << "H";
-            if (interval_obj.minutes() != 0) oss << interval_obj.minutes() << "M";
-            if (interval_obj.seconds() != 0 || interval_obj.millis() != 0) {
-                double seconds = interval_obj.seconds() + interval_obj.millis() / 1000.0;
-                oss << seconds << "S";
-            }
-        }
-        std::string str = oss.str();
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(str.c_str());
-        v.val.string.len = str.length();
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_record()) {
-        elog(WARNING, "ValueToJsonbValue: record 1");
+    if (value.has_record()) {
         pushJsonbValue(pstate, WJB_BEGIN_OBJECT, NULL);
-        elog(WARNING, "ValueToJsonbValue: record 3");
         for (const auto& field : value.record().fields()) {
             JsonbValue key;
-            elog(WARNING, "ValueToJsonbValue: record 3");
             key.type = jbvString;
-            elog(WARNING, "ValueToJsonbValue: record 4 %s", field.name().c_str());
             key.val.string.val = pstrdup(field.name().c_str());
             key.val.string.len = field.name().length();
             pushJsonbValue(pstate, WJB_KEY, &key);
-            elog(WARNING, "ValueToJsonbValue: record 5");
-
-            ValueToJsonbValue(field.value(), pstate);
-            elog(WARNING, "ValueToJsonbValue: record 6");
+            JsonbValue* field_value = NULL;
+            ValueToJsonbValue(field.value(), pstate, &field_value);
+            pushJsonbValue(pstate, WJB_VALUE, field_value);
         }
-        elog(WARNING, "ValueToJsonbValue: record 7");
-        return pushJsonbValue(pstate, WJB_END_OBJECT, NULL);
-
+        *r = pushJsonbValue(pstate, WJB_END_OBJECT, NULL);
     } else if (value.has_list()) {
         pushJsonbValue(pstate, WJB_BEGIN_ARRAY, NULL);
-
         for (const auto& item : value.list().values()) {
-            ValueToJsonbValue(item, pstate);
+            JsonbValue* item_value = NULL;
+            ValueToJsonbValue(item, pstate, &item_value);
+            pushJsonbValue(pstate, WJB_VALUE, item_value);
         }
-
-        return pushJsonbValue(pstate, WJB_END_ARRAY, NULL);
+        *r = pushJsonbValue(pstate, WJB_END_ARRAY, NULL);
     } else {
-        elog(ERROR, "Unsupported value type: %d", value.value_case());
+        JsonbValue* v = (JsonbValue*)palloc(sizeof(JsonbValue));
+        if (value.has_null()) {
+            v->type = jbvNull;
+        } else if (value.has_string()) {
+            v->type = jbvString;
+            std::string str = value.string().v();
+            v->val.string.val = pstrdup(str.c_str());
+            v->val.string.len = str.length();
+        } else if (value.has_bool_()) {
+            v->type = jbvBool;
+            v->val.boolean = value.bool_().v();
+        } else if (value.has_binary()) {
+            // Represent binary data as base64 string using pg_b64_encode
+            std::string binary_data = value.binary().v();
+            int binary_len = binary_data.length();
+
+            // Calculate the length required for the base64 encoded data
+            size_t encoded_len = pg_b64_enc_len(binary_len);
+
+            // Allocate memory for the encoded data
+            char *encoded = (char *) palloc(encoded_len + 1); // +1 for null terminator
+
+            // Encode the binary data
+            int actual_encoded_len = pg_b64_encode((const char *) binary_data.c_str(), binary_len, encoded, encoded_len);
+
+            if (actual_encoded_len < 0) {
+                elog(ERROR, "Error encoding binary data to base64");
+            }
+
+            // Null-terminate the encoded string
+            encoded[actual_encoded_len] = '\0';
+
+            v->type = jbvString;
+            v->val.string.val = encoded;
+            v->val.string.len = actual_encoded_len;
+        } else if (value.has_date()) {
+            auto date_obj = value.date();
+            char buf[11]; // YYYY-MM-DD\0
+            snprintf(buf, sizeof(buf), "%04d-%02d-%02d", date_obj.year(), date_obj.month(), date_obj.day());
+            v->type = jbvString;
+            v->val.string.val = pstrdup(buf);
+            v->val.string.len = strlen(buf);
+        } else if (value.has_time()) {
+            auto time_obj = value.time();
+            char buf[13]; // HH:MM:SS\0
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d", time_obj.hour(), time_obj.minute(), time_obj.second());
+            v->type = jbvString;
+            v->val.string.val = pstrdup(buf);
+            v->val.string.len = strlen(buf);
+        } else if (value.has_timestamp()) {
+            auto timestamp_obj = value.timestamp();
+            char buf[30]; // YYYY-MM-DDTHH:MM:SS.ssssssZ\0
+            snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%06dZ",
+                     timestamp_obj.year(), timestamp_obj.month(), timestamp_obj.day(),
+                     timestamp_obj.hour(), timestamp_obj.minute(), timestamp_obj.second(),
+                     timestamp_obj.nano() / 1000);
+            v->type = jbvString;
+            v->val.string.val = pstrdup(buf);
+            v->val.string.len = strlen(buf);
+        } else if (value.has_interval()) {
+            auto interval_obj = value.interval();
+            std::ostringstream oss;
+            oss << "P";
+            if (interval_obj.years() != 0) oss << interval_obj.years() << "Y";
+            if (interval_obj.months() != 0) oss << interval_obj.months() << "M";
+            if (interval_obj.weeks() != 0) oss << interval_obj.weeks() << "W";
+            if (interval_obj.days() != 0) oss << interval_obj.days() << "D";
+            if (interval_obj.hours() != 0 || interval_obj.minutes() != 0 || interval_obj.seconds() != 0 || interval_obj.millis() != 0) {
+                oss << "T";
+                if (interval_obj.hours() != 0) oss << interval_obj.hours() << "H";
+                if (interval_obj.minutes() != 0) oss << interval_obj.minutes() << "M";
+                if (interval_obj.seconds() != 0 || interval_obj.millis() != 0) {
+                    double seconds = interval_obj.seconds() + interval_obj.millis() / 1000.0;
+                    oss << seconds << "S";
+                }
+            }
+            std::string str = oss.str();
+            v->type = jbvString;
+            v->val.string.val = pstrdup(str.c_str());
+            v->val.string.len = str.length();
+        } else {
+            // number
+            Datum numDatum;
+            if (value.has_byte()) {
+                numDatum = DirectFunctionCall1(int2_numeric, Int16GetDatum(value.byte().v()));
+            } else if (value.has_short_()) {
+                numDatum = DirectFunctionCall1(int2_numeric, Int16GetDatum(value.short_().v()));
+            } else if (value.has_int_()) {
+                numDatum = DirectFunctionCall1(int4_numeric, Int32GetDatum(value.int_().v()));
+            } else if (value.has_long_()) {
+                numDatum = DirectFunctionCall1(int8_numeric, Int64GetDatum(value.long_().v()));
+            } else if (value.has_float_()) {
+                numDatum = DirectFunctionCall1(float4_numeric, Float4GetDatum(value.float_().v()));
+            } else if (value.has_double_()) {
+                numDatum = DirectFunctionCall1(float8_numeric, Float8GetDatum(value.double_().v()));
+            } else if (value.has_decimal()) {
+                numDatum = DirectFunctionCall1(numeric_in, CStringGetDatum(value.decimal().v().c_str()));
+            } else {
+                elog(ERROR, "Unsupported value type: %d", value.value_case());
+            }
+            Numeric num = DatumGetNumeric(numDatum);
+            v->type = jbvNumeric;
+            v->val.numeric = num;
+        }
+        *r = v;
     }
 }
 
@@ -909,12 +965,11 @@ bool sql_query_iterator_next(SqlQueryIterator* iterator, int* attnums, Datum* dv
     {
         const Column& column = columns[i];
         const Value& value = column.data();
-
-        elog(DEBUG3, "Processing field %d with %s", i, column.name().c_str());
-
         int attnum = attnums[i];
 
-        ValueToDatum(value, pgtypes[attnum], pgtypmods[attnum], &dvalues[attnum], &nulls[attnum]);
+        elog(DEBUG3, "Processing field %d (attnum %d) with \"%s\"", i, attnum, column.name().c_str());
+
+        ValueToDatum(value, pgtypes[i], pgtypmods[i], &dvalues[attnum], &nulls[attnum]);
     }
 
     return true;
