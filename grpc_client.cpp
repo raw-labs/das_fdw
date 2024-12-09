@@ -6,6 +6,7 @@
 #include "com/rawlabs/protocol/das/rows.pb.h"
 #include "com/rawlabs/protocol/das/das.pb.h"
 #include "grpc_client.h"
+#include <sstream>
 
 #include <map>
 
