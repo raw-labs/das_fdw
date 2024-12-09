@@ -618,14 +618,12 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
 		int32		pgtypmod = TupleDescAttr(festate->attinmeta->tupdesc, attnum)->atttypmod;
 
 		if (TupleDescAttr(tupleDescriptor, attnum)->attisdropped) {
-            elog(WARNING, "dasBeginForeignScan: %d is attnum %d -> dropped", bindnum, attnum);
 			continue;
         }
 
 		festate->attnums[bindnum] = attnum;
 		festate->pgtypes[bindnum] = pgtype;
 		festate->pgtypmods[bindnum] = pgtypmod;
-        elog(WARNING, "dasBeginForeignScan: %d is attnum %d -> %d", bindnum, attnum, pgtype);
 		bindnum++;
 	}
 
@@ -691,13 +689,6 @@ dasIterateForeignScan(ForeignScanState *node)
 	memset(nulls, true, natts * sizeof(bool));
 
     /* Fetch the next record */
-    {
-        int i;
-        for (i=0; i<natts; i++) {
-            elog(WARNING, "festate->pgtypes[%d] = %d", i, festate->pgtypes[i]);
-        }
-    }
-
     bool has_next = sql_query_iterator_next(festate->iterator, festate->attnums, dvalues, nulls, festate->pgtypes, festate->pgtypmods);
 
     if (has_next)

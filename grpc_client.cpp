@@ -17,7 +17,6 @@ extern "C" {
     #include "catalog/pg_type.h"
     #include "optimizer/optimizer.h"
     #include "utils/builtins.h"
-    #include "extension/hstore/hstore.h"
     #include "utils/date.h"
     #include "utils/datetime.h"
     #include "utils/jsonb.h"
@@ -78,8 +77,7 @@ struct TypeInfo {
 
 Datum ConvertValueListToArray(const ValueList& value_list, Oid elem_type);
 
-JsonbValue* ValueToJsonbValue(const Value& value, JsonbParseState **pstate);
-void ValueToJsonbValue2(const Value& value, JsonbParseState **pstate, JsonbValue** r);
+void ValueToJsonbValue(const Value& value, JsonbParseState **pstate, JsonbValue** r);
 
 TypeInfo GetTypeInfo(const Type& my_type) {
     std::string inner_type;
@@ -124,11 +122,8 @@ TypeInfo GetTypeInfo(const Type& my_type) {
                     return { "jsonb", my_type.record().nullable() };
                 }
             }
-#if 1
+            // We want HSTORE in principle, but adding HSTORE support here is still TODO
             return { "jsonb", my_type.record().nullable() };
-#else
-            return { "hstore", my_type.record().nullable() };
-#endif
         case Type::kList:
             inner_type = GetTypeInfo(my_type.list().innertype()).sql_type;
             return { inner_type + "[]", my_type.list().nullable() };
@@ -369,41 +364,9 @@ void ValueToDatum(const Value& value, Oid pgtyp, int32 pgtypmod, Datum* datum, b
         } else if (pgtyp == JSONBOID) {
             JsonbParseState *state = NULL;
             JsonbValue *res = NULL;
-            ValueToJsonbValue2(value, &state, &res);
+            ValueToJsonbValue(value, &state, &res);
             Jsonb *jsonb = JsonbValueToJsonb(res);
             *datum = JsonbPGetDatum(jsonb);
-#if 0
-        } else if (pgtyp == HSTOREOID) {
-            if (value.has_record()) {
-                elog(ERROR, "NOT WORKING: %d", pgtyp);
-                int num_pairs = value.record().fields().size();
-                Pairs *pairs = (Pairs*)palloc(sizeof(Pairs) * num_pairs);
-                auto fields = value.record().fields();
-                int i;
-                for (i = 0; i < num_pairs; i++) {
-                    const char* key = fields[i].name().c_str();
-                    pairs[i].key = (char*)key;
-                    pairs[i].keylen = strlen(key);
-                    if (fields[i].value().has_null()) {
-                        pairs[i].val = NULL;
-                        pairs[i].vallen = 0;
-                        pairs[i].isnull = true;
-                        pairs[i].needfree = false;
-                    } else {
-                        const char* val = fields[i].value().string().v().c_str();
-                        pairs[i].val = (char*)val;
-                        pairs[i].vallen = strlen(pairs[0].val);
-                        pairs[i].isnull = false;
-                        pairs[i].needfree = true;
-                    }
-                }
-                HStore *hs = NULL; // hstorePairs(pairs, num_pairs, 0);
-                pfree(pairs);
-                *datum = PointerGetDatum(hs);
-            } else {
-                elog(ERROR, "unsupported");
-            }
-#endif
         } else if (pgtyp == BOOLARRAYOID) {
             if (value.has_list()) {
                 *datum = ConvertValueListToArray(value.list(), BOOLOID);
@@ -532,7 +495,7 @@ Datum ConvertValueListToArray(const ValueList& value_list, Oid elem_type)
     return PointerGetDatum(result_array);
 }
 
-void ValueToJsonbValue2(const Value& value, JsonbParseState **pstate, JsonbValue** r)
+void ValueToJsonbValue(const Value& value, JsonbParseState **pstate, JsonbValue** r)
 {
     if (value.has_record()) {
         pushJsonbValue(pstate, WJB_BEGIN_OBJECT, NULL);
@@ -543,7 +506,7 @@ void ValueToJsonbValue2(const Value& value, JsonbParseState **pstate, JsonbValue
             key.val.string.len = field.name().length();
             pushJsonbValue(pstate, WJB_KEY, &key);
             JsonbValue* field_value = NULL;
-            ValueToJsonbValue2(field.value(), pstate, &field_value);
+            ValueToJsonbValue(field.value(), pstate, &field_value);
             pushJsonbValue(pstate, WJB_VALUE, field_value);
         }
         *r = pushJsonbValue(pstate, WJB_END_OBJECT, NULL);
@@ -551,7 +514,7 @@ void ValueToJsonbValue2(const Value& value, JsonbParseState **pstate, JsonbValue
         pushJsonbValue(pstate, WJB_BEGIN_ARRAY, NULL);
         for (const auto& item : value.list().values()) {
             JsonbValue* item_value = NULL;
-            ValueToJsonbValue2(item, pstate, &item_value);
+            ValueToJsonbValue(item, pstate, &item_value);
             pushJsonbValue(pstate, WJB_VALUE, item_value);
         }
         *r = pushJsonbValue(pstate, WJB_END_ARRAY, NULL);
@@ -661,185 +624,6 @@ void ValueToJsonbValue2(const Value& value, JsonbParseState **pstate, JsonbValue
             v->val.numeric = num;
         }
         *r = v;
-    }
-}
-
-JsonbValue* ValueToJsonbValue(const Value& value, JsonbParseState **pstate)
-{
-    if (value.has_null()) {
-        JsonbValue v;
-        v.type = jbvNull;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_byte()) {
-        Datum numDatum = DirectFunctionCall1(int2_numeric, Int16GetDatum(value.byte().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_short_()) {
-        Datum numDatum = DirectFunctionCall1(int2_numeric, Int16GetDatum(value.short_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_int_()) {
-        Datum numDatum = DirectFunctionCall1(int4_numeric, Int32GetDatum(value.int_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_long_()) {
-        Datum numDatum = DirectFunctionCall1(int8_numeric, Int64GetDatum(value.long_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_float_()) {
-        Datum numDatum = DirectFunctionCall1(float4_numeric, Float4GetDatum(value.float_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_double_()) {
-        Datum numDatum = DirectFunctionCall1(float8_numeric, Float8GetDatum(value.double_().v()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_decimal()) {
-        Datum numDatum = DirectFunctionCall1(numeric_in, CStringGetDatum(value.decimal().v().c_str()));
-        Numeric num = DatumGetNumeric(numDatum);
-        JsonbValue v;
-        v.type = jbvNumeric;
-        v.val.numeric = num;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_string()) {
-        JsonbValue v;
-        v.type = jbvString;
-        std::string str = value.string().v();
-        v.val.string.val = pstrdup(str.c_str());
-        v.val.string.len = str.length();
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_bool_()) {
-        JsonbValue v;
-        v.type = jbvBool;
-        v.val.boolean = value.bool_().v();
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_binary()) {
-        // Represent binary data as base64 string using pg_b64_encode
-        std::string binary_data = value.binary().v();
-        int binary_len = binary_data.length();
-
-        // Calculate the length required for the base64 encoded data
-        size_t encoded_len = pg_b64_enc_len(binary_len);
-
-        // Allocate memory for the encoded data
-        char *encoded = (char *) palloc(encoded_len + 1); // +1 for null terminator
-
-        // Encode the binary data
-        int actual_encoded_len = pg_b64_encode((const char *) binary_data.c_str(), binary_len, encoded, encoded_len);
-
-        if (actual_encoded_len < 0) {
-            elog(ERROR, "Error encoding binary data to base64");
-        }
-
-        // Null-terminate the encoded string
-        encoded[actual_encoded_len] = '\0';
-
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = encoded;
-        v.val.string.len = actual_encoded_len;
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_date()) {
-        auto date_obj = value.date();
-        char buf[11]; // YYYY-MM-DD\0
-        snprintf(buf, sizeof(buf), "%04d-%02d-%02d", date_obj.year(), date_obj.month(), date_obj.day());
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(buf);
-        v.val.string.len = strlen(buf);
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_time()) {
-        auto time_obj = value.time();
-        char buf[13]; // HH:MM:SS\0
-        snprintf(buf, sizeof(buf), "%02d:%02d:%02d", time_obj.hour(), time_obj.minute(), time_obj.second());
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(buf);
-        v.val.string.len = strlen(buf);
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_timestamp()) {
-        auto timestamp_obj = value.timestamp();
-        char buf[30]; // YYYY-MM-DDTHH:MM:SS.ssssssZ\0
-        snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%06dZ",
-                 timestamp_obj.year(), timestamp_obj.month(), timestamp_obj.day(),
-                 timestamp_obj.hour(), timestamp_obj.minute(), timestamp_obj.second(),
-                 timestamp_obj.nano() / 1000);
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(buf);
-        v.val.string.len = strlen(buf);
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_interval()) {
-        auto interval_obj = value.interval();
-        std::ostringstream oss;
-        oss << "P";
-        if (interval_obj.years() != 0) oss << interval_obj.years() << "Y";
-        if (interval_obj.months() != 0) oss << interval_obj.months() << "M";
-        if (interval_obj.weeks() != 0) oss << interval_obj.weeks() << "W";
-        if (interval_obj.days() != 0) oss << interval_obj.days() << "D";
-        if (interval_obj.hours() != 0 || interval_obj.minutes() != 0 || interval_obj.seconds() != 0 || interval_obj.millis() != 0) {
-            oss << "T";
-            if (interval_obj.hours() != 0) oss << interval_obj.hours() << "H";
-            if (interval_obj.minutes() != 0) oss << interval_obj.minutes() << "M";
-            if (interval_obj.seconds() != 0 || interval_obj.millis() != 0) {
-                double seconds = interval_obj.seconds() + interval_obj.millis() / 1000.0;
-                oss << seconds << "S";
-            }
-        }
-        std::string str = oss.str();
-        JsonbValue v;
-        v.type = jbvString;
-        v.val.string.val = pstrdup(str.c_str());
-        v.val.string.len = str.length();
-        return pushJsonbValue(pstate, WJB_VALUE, &v);
-    } else if (value.has_record()) {
-        elog(WARNING, "ValueToJsonbValue: record 1");
-        pushJsonbValue(pstate, WJB_BEGIN_OBJECT, NULL);
-        elog(WARNING, "ValueToJsonbValue: record 3");
-        for (const auto& field : value.record().fields()) {
-            JsonbValue key;
-            elog(WARNING, "ValueToJsonbValue: record 3");
-            key.type = jbvString;
-            elog(WARNING, "ValueToJsonbValue: record 4 %s", field.name().c_str());
-            key.val.string.val = pstrdup(field.name().c_str());
-            key.val.string.len = field.name().length();
-            pushJsonbValue(pstate, WJB_KEY, &key);
-            elog(WARNING, "ValueToJsonbValue: record 5");
-
-            ValueToJsonbValue(field.value(), pstate);
-            elog(WARNING, "ValueToJsonbValue: record 6");
-        }
-        elog(WARNING, "ValueToJsonbValue: record 7");
-        return pushJsonbValue(pstate, WJB_END_OBJECT, NULL);
-
-    } else if (value.has_list()) {
-        pushJsonbValue(pstate, WJB_BEGIN_ARRAY, NULL);
-
-        for (const auto& item : value.list().values()) {
-            ValueToJsonbValue(item, pstate);
-        }
-
-        return pushJsonbValue(pstate, WJB_END_ARRAY, NULL);
-    } else {
-        elog(ERROR, "Unsupported value type: %d", value.value_case());
     }
 }
 
