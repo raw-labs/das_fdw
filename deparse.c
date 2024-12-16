@@ -89,8 +89,7 @@ typedef struct deparse_expr_cxt
 								 * foreignrel, when that represents a join or
 								 * a base relation. */
 	StringInfo	buf;			/* output buffer to append to */
-	List	  **params_list;	/* exprs that will become remote Params */
-	bool		is_not_distinct_op; /* True in case of IS NOT DISTINCT clause */
+	List      **params_list;        /* exprs that will become remote Params */
 } deparse_expr_cxt;
 
 #define REL_ALIAS_PREFIX	"r"
@@ -271,7 +270,6 @@ das_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root,
 	context.foreignrel = rel;
 	context.params_list = params_list;
 	context.scanrel = IS_UPPER_REL(rel) ? fpinfo->outerrel : rel;
-	context.is_not_distinct_op = false;
 
 	/* Construct SELECT clause */
 	das_deparse_select_sql(tlist, retrieved_attrs, &context);
@@ -1070,27 +1068,14 @@ static void
 das_deparse_distinct_expr(DistinctExpr *node, deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
-	bool		is_not_distinct_op = context->is_not_distinct_op;
 
 	Assert(list_length(node->args) == 2);
 
-	/*
-	 * In DAS, <=> operator is equal to IS NOT DISTINCT FROM clause, so for
-	 * IS DISTINCT FROM clause, we add NOT before <=> operator.
-	 */
-	if (!is_not_distinct_op)
-		appendStringInfoString(buf, "(NOT ");
-
-	/* Reset the value of is_not_distinct_op for recursive calls. */
-	context->is_not_distinct_op = false;
 	appendStringInfoChar(buf, '(');
 	deparseExpr(linitial(node->args), context);
-	appendStringInfoString(buf, " <=> ");
+	appendStringInfoString(buf, " IS DISTINCT FROM ");
 	deparseExpr(lsecond(node->args), context);
 	appendStringInfoChar(buf, ')');
-
-	if (!is_not_distinct_op)
-		appendStringInfoString(buf, ")");
 }
 
 /*
@@ -1217,23 +1202,11 @@ das_deparse_bool_expr(BoolExpr *node, deparse_expr_cxt *context)
 			op = "OR";
 			break;
 		case NOT_EXPR:
-			/*
-			 * Per transformAExprDistinct(), in the case of IS NOT DISTINCT
-			 * clause, it adds NOT on top of DistinctExpr.  However, in DAS,
-			 * <=> is equivalent to IS NOT DISTINCT FROM clause, so do not
-			 * append NOT here if it is a DistinctExpr.
-			 */
 			arg = (Expr *) lfirst(list_head(node->args));
-			if (!IsA(arg, DistinctExpr))
-			{
-				appendStringInfoString(buf, "(NOT ");
-				deparseExpr(arg, context);
-				appendStringInfoChar(buf, ')');
-				return;
-			}
-
-			/* Mark that we are deparsing a IS NOT DISTINCT FROM clause. */
-			context->is_not_distinct_op = true;
+			appendStringInfoString(buf, "(NOT ");
+			deparseExpr(arg, context);
+			appendStringInfoChar(buf, ')');
+			return;
 	}
 
 	appendStringInfoChar(buf, '(');
@@ -1957,7 +1930,6 @@ das_deparse_from_expr_for_rel(StringInfo buf, PlannerInfo *root,
 			context.scanrel = foreignrel;
 			context.root = root;
 			context.params_list = params_list;
-			context.is_not_distinct_op = false;
 
 			appendStringInfo(buf, "(");
 			das_append_conditions(fpinfo->joinclauses, &context);

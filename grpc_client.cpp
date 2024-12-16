@@ -181,7 +181,7 @@ std::string TypeToOperator(Operator type)
 
 char* TableDefinitionToCreateTableSQL(const TableDefinition& definition, const char* das_id, const char* server_name)
 {
-    std::string sql = "CREATE FOREIGN TABLE " + definition.tableid().name() + " (";
+    std::string sql = "CREATE FOREIGN TABLE " + definition.table_id().name() + " (";
     for (int i = 0; i < definition.columns_size(); ++i) {
         const ColumnDefinition& column = definition.columns(i);
         TypeInfo type_info = GetTypeInfo(column.type());

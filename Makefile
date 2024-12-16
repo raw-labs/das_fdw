@@ -2,7 +2,6 @@
 #
 # Portions Copyright (c) 2012-2014, PostgreSQL Global Development Group
 # Portions Copyright (c) 2004-2024, EnterpriseDB Corporation.
-#
 
 MODULE_big = das_fdw
 
@@ -31,37 +30,51 @@ PROTO_FILES = $(ALL_DAS_PROTOS)
 
 DAS_URL_PREFIX = https://raw.githubusercontent.com/raw-labs/protocol-das/$(DAS_VERSION)/src/main/protobuf/com/rawlabs/protocol/das/
 
-# Objects generated from the proto files.
-# We'll generate all pb/grpc files in one step after all protos are fetched.
+# Objects generated from the proto files
 PROTO_OUT_FILES = $(PROTO_FILES:.proto=.pb.cc) $(PROTO_FILES:.proto=.grpc.pb.cc)
 PROTO_OBJS = $(PROTO_OUT_FILES:.cc=.o)
 GRPC_CLIENT_OBJS = grpc_client.o
 OBJS = das_connection.o option.o deparse.o das_fdw.o das_pushability.o $(PROTO_OBJS) $(GRPC_CLIENT_OBJS)
 
-PG_CPPFLAGS += -I$(PROTO_DIR)
+# Include the proto directory globally
+PG_CPPFLAGS += -I$(PROTO_DIR) $(shell pg_config --cppflags)
 PG_CXXFLAGS += --std=c++17 $(PG_CFLAGS) $(shell pkg-config --cflags grpc++) $(shell pkg-config --cflags protobuf) \
-               -I$(shell pg_config --cppflags) -I$(shell pg_config --includedir-server) -I$(PROTO_DIR)
-SHLIB_LINK += $(shell pkg-config --libs grpc++ grpc protobuf) \
-              -L$(shell pg_config --pkglibdir) $(shell pg_config --ldflags) $(shell pg_config --libs)
+               -I$(shell pg_config --includedir-server) -I$(PROTO_DIR)
+SHLIB_LINK += $(shell pkg-config --libs grpc++ grpc protobuf) -L$(shell pg_config --pkglibdir) \
+              $(shell pg_config --ldflags) $(shell pg_config --libs)
 
-UNAME = uname
-OS := $(shell $(UNAME))
-ifeq ($(OS), Darwin)
-DLSUFFIX = .dylib
-else
-DLSUFFIX = .so
+UNAME = $(shell uname)
+ifeq ($(UNAME), Darwin)
+PG_CXXFLAGS += -stdlib=libc++ -I/opt/homebrew/include
+SHLIB_LINK += -stdlib=libc++ -L/opt/homebrew/lib -lc++
 endif
 
-%.o: %.cpp
-	g++ $(PG_CXXFLAGS) -fPIC -c -o $@ $<
+########################
+# Default Build Target #
+########################
 
-define MAKE_PROTO_DIRS
-	mkdir -p $(dir $1)
-endef
+all: proto-compile $(OBJS)
+
+########################
+# Build Rules #
+########################
+
+%.o: %.cpp
+	$(CXX) $(PG_CXXFLAGS) -fPIC -c -o $@ $<
+
+$(PROTO_DIR)/%.pb.o: $(PROTO_DIR)/%.pb.cc
+	$(CXX) $(PG_CXXFLAGS) -fPIC -c -o $@ $<
+
+$(PROTO_DIR)/%.grpc.pb.o: $(PROTO_DIR)/%.grpc.pb.cc
+	$(CXX) $(PG_CXXFLAGS) -fPIC -c -o $@ $<
 
 ########################
 # Download/Copy Protos #
 ########################
+
+define MAKE_PROTO_DIRS
+	mkdir -p $(dir $1)
+endef
 
 $(PROTO_DIR)/com/rawlabs/protocol/das/%.proto:
 	$(call MAKE_PROTO_DIRS,$@)
@@ -70,7 +83,7 @@ $(PROTO_DIR)/com/rawlabs/protocol/das/%.proto:
 		cp $(LOCAL_PROTO_FILES)/protocol-das/src/main/protobuf/com/rawlabs/protocol/das/$*.proto $@; \
 	else \
 		echo "Downloading $*.proto"; \
-		curl -sSL -o $@ $(DAS_URL_PREFIX)$*.proto; \
+		curl -sfSL -o $@ $(DAS_URL_PREFIX)$*.proto || (rm -f $@ && echo "Failed to download $*.proto" && exit 1); \
 	fi
 
 # Download all .proto files
@@ -87,14 +100,8 @@ proto-compile: protos
 		--plugin=protoc-gen-grpc=$(shell which grpc_cpp_plugin) $(PROTO_FILES)
 	touch $@
 
-# All generated files depend on proto-compile to ensure they are generated after all protos are available
+# Ensure all generated files depend on proto-compile
 $(PROTO_OUT_FILES): proto-compile
-
-$(PROTO_DIR)/%.pb.o: $(PROTO_DIR)/%.pb.cc
-	g++ $(PG_CXXFLAGS) -fPIC -c -I$(PROTO_DIR) -o $@ $<
-
-$(PROTO_DIR)/%.grpc.pb.o: $(PROTO_DIR)/%.grpc.pb.cc
-	g++ $(PG_CXXFLAGS) -fPIC -c -I$(PROTO_DIR) -o $@ $<
 
 ########################
 # PostgreSQL Extension #
@@ -114,23 +121,12 @@ ifeq (,$(findstring $(MAJORVERSION), 12 13 14 15 16 17))
 $(error PostgreSQL 12, 13, 14, 15, 16, or 17 is required to compile this extension)
 endif
 
-.PHONY: protos proto-compile clean
-
-all: proto-compile
+########################
+# Targets #
+########################
 
 clean:
 	rm -f $(OBJS) das_fdw.so
 	rm -f $(PROTO_DIR)/**/*.pb.cc $(PROTO_DIR)/**/*.pb.h
 	rm -rf $(PROTO_DIR) proto-compile
-
-##########################
-# Building the example   #
-##########################
-
-example.o: example.cpp
-	g++ $(PG_CXXFLAGS) -I$(PROTO_DIR) -I/Users/miguel/raw-labs/libpg_query -I/opt/homebrew/include -fPIC -c -o $@ $<
-
-# Link the example binary with PostgreSQL libs, gRPC, protobuf, and libpg_query
-example: example.o $(OBJS)
-	g++ $(PG_CXXFLAGS) -o $@ example.o $(OBJS) $(SHLIB_LINK) -lpg_query
 
