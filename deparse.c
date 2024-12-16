@@ -439,77 +439,6 @@ das_deparse_from_expr(List *quals, deparse_expr_cxt *context)
 }
 
 /*
- * Deparse remote INSERT statement
- */
-void
-das_deparse_insert(StringInfo buf, PlannerInfo *root, Index rtindex,
-					 Relation rel, List *targetAttrs, bool doNothing)
-{
-	ListCell   *lc;
-#if PG_VERSION_NUM >= 140000
-	TupleDesc	tupdesc = RelationGetDescr(rel);
-#endif
-
-	appendStringInfo(buf, "INSERT %sINTO ", doNothing ? "IGNORE " : "");
-	das_deparse_relation(buf, rel);
-
-	if (targetAttrs)
-	{
-		AttrNumber	pindex;
-		bool		first;
-
-		appendStringInfoChar(buf, '(');
-
-		first = true;
-		foreach(lc, targetAttrs)
-		{
-			int			attnum = lfirst_int(lc);
-
-			if (!first)
-				appendStringInfoString(buf, ", ");
-			first = false;
-
-			das_deparse_column_ref(buf, rtindex, attnum, root, false);
-		}
-
-		appendStringInfoString(buf, ") VALUES (");
-
-		pindex = 1;
-		first = true;
-		foreach(lc, targetAttrs)
-		{
-			if (!first)
-				appendStringInfoString(buf, ", ");
-			first = false;
-
-#if PG_VERSION_NUM >= 140000
-			if (TupleDescAttr(tupdesc, lfirst_int(lc) - 1)->attgenerated)
-			{
-				appendStringInfoString(buf, "DEFAULT");
-				continue;
-			}
-#endif
-			appendStringInfo(buf, "?");
-			pindex++;
-		}
-
-		appendStringInfoChar(buf, ')');
-	}
-	else
-		appendStringInfoString(buf, " DEFAULT VALUES");
-}
-
-void
-das_deparse_analyze(StringInfo sql, char *dbname, char *relname)
-{
-	appendStringInfo(sql, "SELECT");
-	appendStringInfo(sql, " round(((data_length + index_length)), 2)");
-	appendStringInfo(sql, " FROM information_schema.TABLES");
-	appendStringInfo(sql, " WHERE table_schema = '%s' AND table_name = '%s'",
-					 dbname, relname);
-}
-
-/*
  * Emit a target list that retrieves the columns specified in attrs_used.
  * This is used for both SELECT and RETURNING targetlists.
  */
@@ -757,73 +686,6 @@ do { \
 }
 
 /*
- * Deparse remote UPDATE statement
- *
- * The statement text is appended to buf, and we also create an integer List
- * of the columns being retrieved by RETURNING (if any), which is returned
- * to *retrieved_attrs.
- */
-void
-das_deparse_update(StringInfo buf, PlannerInfo *root, Index rtindex,
-					 Relation rel, List *targetAttrs, char *attname)
-{
-	AttrNumber	pindex;
-	bool		first;
-	ListCell   *lc;
-#if PG_VERSION_NUM >= 140000
-	TupleDesc	tupdesc = RelationGetDescr(rel);
-#endif
-
-	appendStringInfoString(buf, "UPDATE ");
-	das_deparse_relation(buf, rel);
-	appendStringInfoString(buf, " SET ");
-
-	pindex = 2;
-	first = true;
-	foreach(lc, targetAttrs)
-	{
-		int			attnum = lfirst_int(lc);
-
-		if (attnum == 1)
-			continue;
-
-		if (!first)
-			appendStringInfoString(buf, ", ");
-		first = false;
-
-		das_deparse_column_ref(buf, rtindex, attnum, root, false);
-
-#if PG_VERSION_NUM >= 140000
-		if (TupleDescAttr(tupdesc, attnum - 1)->attgenerated)
-		{
-			appendStringInfoString(buf, " = DEFAULT");
-			continue;
-		}
-#endif
-		appendStringInfo(buf, " = ?");
-		pindex++;
-	}
-
-	appendStringInfo(buf, " WHERE %s = ?", attname);
-}
-
-/*
- * Deparse remote DELETE statement
- *
- * The statement text is appended to buf, and we also create an integer List
- * of the columns being retrieved by RETURNING (if any), which is returned
- * to *retrieved_attrs.
- */
-void
-das_deparse_delete(StringInfo buf, PlannerInfo *root, Index rtindex,
-					 Relation rel, char *name)
-{
-	appendStringInfoString(buf, "DELETE FROM ");
-	das_deparse_relation(buf, rel);
-	appendStringInfo(buf, " WHERE %s = ?", name);
-}
-
-/*
  * Deparse given Var node into context->buf.
  *
  * If the Var belongs to the foreign relation, just print its remote name.
@@ -1052,9 +914,6 @@ das_deparse_array_ref(SubscriptingRef *node, deparse_expr_cxt *context)
 static char *
 das_replace_function(char *in)
 {
-	if (strcmp(in, "btrim") == 0)
-		return "trim";
-
 	return in;
 }
 
@@ -2466,20 +2325,6 @@ das_append_limit_clause(deparse_expr_cxt *context)
 	}
 }
 
-#if PG_VERSION_NUM >= 140000
-/*
- * das_deparse_truncate_sql
- * 		Construct a simple "TRUNCATE <relname>" statement.
- */
-void
-das_deparse_truncate_sql(StringInfo buf, Relation rel)
-{
-	appendStringInfoString(buf, "TRUNCATE ");
-
-	das_deparse_relation(buf, rel);
-}
-#endif
-
 /*
  * das_append_orderby_suffix
  * 		Append the ASC/DESC and NULLS FIRST/LAST parts of an ORDER BY clause.
@@ -2510,6 +2355,7 @@ das_append_orderby_suffix(Expr *em_expr, const char *sortby_dir,
         appendStringInfoString(buf, " NULLS LAST");
     }
 
+	// Old code follows for MySQL:
 	// Assert(sortby_dir != NULL);
 
 	// deparseExpr(em_expr, context);

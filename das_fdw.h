@@ -186,15 +186,6 @@ extern bool das_is_valid_option(const char *option, Oid context);
 extern das_opt *das_get_options(Oid foreigntableid, bool is_foreigntable);
 
 /* depare.c headers */
-extern void das_deparse_insert(StringInfo buf, PlannerInfo *root,
-								 Index rtindex, Relation rel,
-								 List *targetAttrs, bool doNothing);
-extern void das_deparse_update(StringInfo buf, PlannerInfo *root,
-								 Index rtindex, Relation rel,
-								 List *targetAttrs, char *attname);
-extern void das_deparse_delete(StringInfo buf, PlannerInfo *root,
-								 Index rtindex, Relation rel, char *name);
-extern void das_deparse_analyze(StringInfo buf, char *dbname, char *relname);
 extern bool das_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel,
 								  Expr *expr, bool is_remote_cond);
 extern void das_deparse_select_stmt_for_rel(StringInfo buf,
@@ -221,9 +212,6 @@ extern EquivalenceMember *das_find_em_for_rel_target(PlannerInfo *root,
 													   EquivalenceClass *ec,
 													   RelOptInfo *rel);
 extern bool das_is_builtin(Oid objectId);
-#if PG_VERSION_NUM >= 140000
-extern void das_deparse_truncate_sql(StringInfo buf, Relation rel);
-#endif
 extern char *das_quote_identifier(const char *str, char quotechar);
 
 /* das_connection.c headers */
