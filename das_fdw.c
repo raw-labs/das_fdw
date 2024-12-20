@@ -238,8 +238,16 @@ static void prepare_query_params(PlanState *node,
 								 int numParams,
 								 FmgrInfo **param_flinfo,
 								 List **param_exprs,
-								 const char ***param_values,
+								 Datum **param_values,
+								 bool **param_nulls,
 								 Oid **param_types);
+static void process_query_params(ExprContext *econtext,
+								 FmgrInfo *param_flinfo,
+								 List *param_exprs,
+								 Datum *param_values,
+								 bool *param_nulls,
+								 Oid *param_types);								 
+static void bind_stmt_params_and_exec(ForeignScanState *node);
 static bool das_foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 								  JoinType jointype, RelOptInfo *outerrel,
 								  RelOptInfo *innerrel,
@@ -509,7 +517,6 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
 	TupleTableSlot 	   *tupleSlot = node->ss.ss_ScanTupleSlot;
 	TupleDesc			tupleDescriptor = tupleSlot->tts_tupleDescriptor;
 	int 				bindnum = 0;
-	char				unique_plan_id[64];
 
     elog(DEBUG1, "dasBeginForeignScan: Begin");
 
@@ -567,10 +574,12 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
     user = GetUserMapping(userid, server->serverid);
 
     /* Fetch the options. */
-    options = das_get_options(rte->relid, true);
+    festate->dasFdwOptions = das_get_options(rte->relid, true);
 
     /* Establish connection to DAS (Data Access Service). */
-    festate->das = das_get_connection(server, user, options);
+    festate->das = das_get_connection(server, user, festate->dasFdwOptions);
+
+	festate->query_executed = false;
 
     /* Stash away the state info we have already. */
     festate->query = strVal(list_nth(fsplan->fdw_private,
@@ -580,20 +589,9 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
 	festate->plan_id = DatumGetInt64(((Const *) list_nth(fsplan->fdw_private, dasFdwScanPrivateUniquePlanId))->constvalue);
 	elog(WARNING, "got here4.3  with plan_id = %lu", festate->plan_id);											   
     festate->attinmeta = TupleDescGetAttInMetadata(tupleDescriptor);
-    // festate->temp_cxt = AllocSetContextCreate(estate->es_query_cxt,
-    //                                           "das_fdw temporary data",
-    //                                           ALLOCSET_DEFAULT_SIZES);
-
-    /* Prepare and send the remote SQL query. */
-    char *remote_sql_query = das_remove_quotes(pstrdup(festate->query));
-    elog(WARNING, "About to send query: %s", remote_sql_query);
-
-    /* Initialize the iterator. */
-	snprintf(unique_plan_id, sizeof(unique_plan_id), "%d-%lu", fdw_instance_pid, festate->plan_id);
-    festate->iterator = sql_query_iterator_init(options, remote_sql_query, unique_plan_id);
-    if (!festate->iterator)
-        ereport(ERROR,
-                (errmsg("Failed to initialize SQL query iterator")));
+    festate->temp_cxt = AllocSetContextCreate(estate->es_query_cxt,
+                                              "das_fdw temporary data",
+                                              ALLOCSET_DEFAULT_SIZES);
 
 	/* Prepare for output conversion of parameters used in remote query. */
 	numParams = list_length(fsplan->fdw_exprs);
@@ -605,6 +603,7 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
 							 &festate->param_flinfo,
 							 &festate->param_exprs,
 							 &festate->param_values,
+							 &festate->param_nulls,
 							 &festate->param_types);
 
 	/* Store the attribute numbers of the columns to be fetched. */
@@ -630,33 +629,33 @@ dasBeginForeignScan(ForeignScanState *node, int eflags)
 	elog(WARNING, "End of dasBeginForeignScan");
 }
 
-/*
- * Logs the details of each attribute in the TupleDesc.
- */
-static void LogTupleDescDetails(TupleDesc tupdesc) {
-    int natts = tupdesc->natts;
+// /*
+//  * Logs the details of each attribute in the TupleDesc.
+//  */
+// static void LogTupleDescDetails(TupleDesc tupdesc) {
+//     int natts = tupdesc->natts;
 
-    elog(WARNING, "Logging TupleDesc Details:");
-    for (int i = 0; i < natts; i++) {
-        Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+//     elog(WARNING, "Logging TupleDesc Details:");
+//     for (int i = 0; i < natts; i++) {
+//         Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
         
-        // Get the type name from the type OID
-        char *type_name = format_type_be(attr->atttypid);
+//         // Get the type name from the type OID
+//         char *type_name = format_type_be(attr->atttypid);
         
-        // Log attribute details
-        elog(WARNING, "Column %d: Name='%s', Type='%s' (OID=%u), Typmod=%d, AttNo=%d, IsDropped=%d",
-             i + 1, // Attribute numbers start at 1
-             NameStr(attr->attname),
-             type_name,
-             attr->atttypid,
-             attr->atttypmod,
-             attr->attnum,
-             attr->attisdropped);
+//         // Log attribute details
+//         elog(WARNING, "Column %d: Name='%s', Type='%s' (OID=%u), Typmod=%d, AttNo=%d, IsDropped=%d",
+//              i + 1, // Attribute numbers start at 1
+//              NameStr(attr->attname),
+//              type_name,
+//              attr->atttypid,
+//              attr->atttypmod,
+//              attr->attnum,
+//              attr->attisdropped);
         
-        // Free the type name string allocated by format_type_be
-        pfree(type_name);
-    }
-}
+//         // Free the type name string allocated by format_type_be
+//         pfree(type_name);
+//     }
+// }
 
 /*
  * dasIterateForeignScan
@@ -674,19 +673,26 @@ dasIterateForeignScan(ForeignScanState *node)
 	ForeignScan *fsplan = (ForeignScan *) node->ss.ps.plan;
     List	   *fdw_private = fsplan->fdw_private;
 	int i;
-
-	int natts = festate->attinmeta->tupdesc->natts;
+	int natts;
 
     elog(WARNING, "IterateForeignScan begin");
 
-    ExecClearTuple(tupleSlot);
-
-    /* Initialize values and nulls */
+	natts = festate->attinmeta->tupdesc->natts;
 
 	dvalues = palloc0(natts * sizeof(Datum));
 	nulls = palloc(natts * sizeof(bool));
+
 	/* Initialize to nulls for any columns not present in result */
 	memset(nulls, true, natts * sizeof(bool));
+
+    ExecClearTuple(tupleSlot);
+
+	/*
+	 * If this is the first call after Begin or ReScan, we need to bind the
+	 * params and execute the query.
+	 */
+	if (!festate->query_executed)
+		bind_stmt_params_and_exec(node);
 
     /* Fetch the next record */
     bool has_next = sql_query_iterator_next(festate->iterator, festate->attnums, dvalues, nulls, festate->pgtypes, festate->pgtypmods);
@@ -706,7 +712,7 @@ dasIterateForeignScan(ForeignScanState *node)
 		{
 			elog(WARNING, "Whole-row references are not involved in pushed down join");
 
-			LogTupleDescDetails(attinmeta->tupdesc);
+			// LogTupleDescDetails(attinmeta->tupdesc);
 
 			/* Form the Tuple using Datums */
 			tup = heap_form_tuple(attinmeta->tupdesc, dvalues, nulls);
@@ -778,7 +784,7 @@ dasReScanForeignScan(ForeignScanState *node)
 	 * Set the query_executed flag to false so that the query will be executed
 	 * in dasIterateForeignScan().
 	 */
-	// festate->query_executed = false;
+	festate->query_executed = false;
 
 }
 
@@ -855,7 +861,6 @@ dasGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 		pull_varattnos((Node *) rinfo->clause, baserel->relid,
 					   &fpinfo->attrs_used);
 	}
-
 
 	initStringInfo(&sql);
 
@@ -1971,7 +1976,8 @@ prepare_query_params(PlanState *node,
 					 int numParams,
 					 FmgrInfo **param_flinfo,
 					 List **param_exprs,
-					 const char ***param_values,
+					 Datum **param_values,
+					 bool **param_nulls,
 					 Oid **param_types)
 {
 	int			i;
@@ -2008,8 +2014,96 @@ prepare_query_params(PlanState *node,
 	 */
 	*param_exprs = ExecInitExprList(fdw_exprs, node);
 
-	/* Allocate buffer for text form of query parameters. */
-	*param_values = (const char **) palloc0(numParams * sizeof(char *));
+	/* Allocate buffer for values of query parameters. */
+	*param_values = (Datum *) palloc0(numParams * sizeof(Datum));
+	*param_nulls = (bool *) palloc0(numParams * sizeof(bool));
+}
+
+
+/*
+ * Construct array of query parameter values in text format.
+ */
+static void
+process_query_params(ExprContext *econtext,
+					 FmgrInfo *param_flinfo,
+					 List *param_exprs,
+					 Datum *param_values,
+					 bool *param_nulls,
+					 Oid *param_types)
+{
+	int			i;
+	ListCell   *lc;
+
+	i = 0;
+	foreach(lc, param_exprs)
+	{
+		ExprState  *expr_state = (ExprState *) lfirst(lc);
+		Datum		expr_value;
+		bool		isNull;
+
+		/* Evaluate the parameter expression */
+		expr_value = ExecEvalExpr(expr_state, econtext, &isNull);
+
+		param_nulls[i] = isNull;
+		param_values[i] = expr_value;
+		
+		i++;
+	}
+}
+
+/*
+ * Process the query params and bind the same with the statement, if any.
+ * Also, execute the statement. If fetching the var size column then bind
+ * those again to allocate field->max_length memory.
+ */
+static void
+bind_stmt_params_and_exec(ForeignScanState *node)
+{
+	DASFdwExecState *festate = (DASFdwExecState *) node->fdw_state;
+	ExprContext *econtext = node->ss.ps.ps_ExprContext;
+	int			numParams = festate->numParams;
+	Datum 	   *values = festate->param_values;
+	bool	   *nulls = festate->param_nulls;
+	ListCell   *lc;
+	TupleDesc	tupleDescriptor = festate->attinmeta->tupdesc;
+	int			atindex = 0;
+	char		unique_plan_id[64];
+	MemoryContext oldcontext;
+
+	/*
+	 * Construct array of query parameter values in text format.  We do the
+	 * conversions in the short-lived per-tuple context, so as not to cause a
+	 * memory leak over repeated scans.
+	 */
+	if (numParams > 0)
+	{
+		oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+		process_query_params(econtext,
+							 festate->param_flinfo,
+							 festate->param_exprs,
+							 values,
+							 nulls,
+							 festate->param_types);
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/*
+	 * Finally, execute the query. The result will be placed in the array we
+	 * already bind.
+	 */
+    char *remote_sql_query = das_remove_quotes(pstrdup(festate->query));
+    elog(WARNING, "About to send query: %s", remote_sql_query);
+
+	snprintf(unique_plan_id, sizeof(unique_plan_id), "%d-%lu", fdw_instance_pid, festate->plan_id);
+    festate->iterator = sql_query_iterator_init(festate->dasFdwOptions, remote_sql_query, unique_plan_id);
+    if (!festate->iterator)
+        ereport(ERROR,
+                (errmsg("Failed to initialize SQL query iterator")));
+
+	/* Mark the query as executed */
+	festate->query_executed = true;
 }
 
 Datum
@@ -2105,8 +2199,6 @@ dasGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 	fpinfo->options = ((DASFdwRelationInfo *) outerrel->fdw_private)->options;
 	elog(WARNING, "join here1.2");
 	elog(WARNING, "das_url: %s", fpinfo->options->das_url);
-
-//yeah this needs to re-read.
 
 	fpinfo->das = ((DASFdwRelationInfo *) outerrel->fdw_private)->das;
 	elog(WARNING, "join here1.3");

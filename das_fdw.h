@@ -77,41 +77,43 @@ typedef struct
 typedef struct DASFdwExecState
 {
  	/* Connection and query execution */
-	DAS 	  		 *das;
+	DAS 	       *das;
 	das_opt        *dasFdwOptions;/* DAS FDW options */
     SqlQueryIterator *iterator;       /* Iterator for fetching rows */
-    char             *query;          /* Query string */
-    List             *retrieved_attrs;/* List of target attribute numbers */
-    AttInMetadata    *attinmeta;      /* Attribute input metadata */
-    MemoryContext     temp_cxt;       /* Context for per-tuple temporary data */
-	int 			 *attnums;
-	Oid 			 *pgtypes;
-	int32 			 *pgtypmods;
+    char           *query;          /* Query string */
+    List           *retrieved_attrs;/* List of target attribute numbers */
+	bool			query_executed; /* have we executed the query? */
+    AttInMetadata  *attinmeta;      /* Attribute input metadata */
+    MemoryContext	temp_cxt;       /* Context for per-tuple temporary data */
+	int 		   *attnums;
+	Oid 		   *pgtypes;
+	int32 		   *pgtypmods;
 
     /* Field mapping */
-    int               num_fields;     /* Number of fields in the result set */
-    int              *field_map;      /* Mapping from field positions to attribute numbers */
-	HTAB 			 *colname_to_attnum;
+    int      		num_fields;     /* Number of fields in the result set */
+    int            *field_map;      /* Mapping from field positions to attribute numbers */
+	HTAB 		   *colname_to_attnum;
 
     /* Whole-row reference handling */
-    int               max_relid;      /* Maximum relation ID */
-    Bitmapset        *relids;         /* Set of relation IDs involved in the scan */
-    DASWRState    **wr_states;      /* Whole-row construction information */
-    TupleDesc         wr_tupdesc;     /* Tuple descriptor for the result */
-    Datum            *wr_values;      /* Array for holding column values */
-    bool             *wr_nulls;       /* Array for holding null flags */
+    int            max_relid;      /* Maximum relation ID */
+    Bitmapset     *relids;         /* Set of relation IDs involved in the scan */
+    DASWRState   **wr_states;      /* Whole-row construction information */
+    TupleDesc      wr_tupdesc;     /* Tuple descriptor for the result */
+    Datum          *wr_values;      /* Array for holding column values */
+    bool           *wr_nulls;       /* Array for holding null flags */
 
     /* Other state */
-    int               numParams;      /* Number of parameters passed to query */
-    FmgrInfo         *param_flinfo;   /* Output conversion functions */
-    List             *param_exprs;    /* Executable expressions for param values */
-    const char      **param_values;   /* Textual values of query parameters */
-    Oid              *param_types;    /* Types of query parameters */
+    int          	numParams;      /* Number of parameters passed to query */
+    FmgrInfo       *param_flinfo;   /* Output conversion functions */
+    List           *param_exprs;    /* Executable expressions for param values */
+    Datum         **param_values;   /* Values of query parameters */
+    bool           *param_nulls;   	/* Nullability of query parameters */
+    Oid            *param_types;    /* Types of query parameters */
 
-	int				  p_nums;			/* number of parameters to transmit */
-	FmgrInfo	     *p_flinfo;		/* output conversion functions for them */
-	bool			  has_var_size_col;	/* true if fetching var size columns */
-	int			     *wr_attrs_pos;	/* Array mapping the attributes in the
+	int				p_nums;			/* number of parameters to transmit */
+	FmgrInfo	   *p_flinfo;		/* output conversion functions for them */
+	bool			has_var_size_col;	/* true if fetching var size columns */
+	int			   *wr_attrs_pos;	/* Array mapping the attributes in the
 									 * ForeignScan result to those in the rows
 									 * fetched from the foreign server.  The array
 									 * is indexed by the attribute numbers in the
@@ -119,11 +121,11 @@ typedef struct DASFdwExecState
 	DASWRState    **daswrstates;	/* whole-row construction information for
 									 * each base relation involved in the
 									 * pushed down join. */
-	AttrNumber		  rowidAttno;		/* attnum of resjunk rowid column */
-	char 		     *attname;	/* attname of rowid column */
-	char 		     *table_name;	/* table name */
+	AttrNumber		rowidAttno;		/* attnum of resjunk rowid column */
+	char 		   *attname;	/* attname of rowid column */
+	char 		   *table_name;	/* table name */
 
-	uint64	     	  plan_id; /* unique identifier for this plan */
+	uint64	    	plan_id; /* unique identifier for this plan */
 
 } DASFdwExecState;
 

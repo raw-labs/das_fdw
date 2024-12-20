@@ -761,9 +761,9 @@ char** get_operations_supported(das_opt* opts, bool* orderby_supported, bool* jo
         elog(ERROR, "Failed to get supported operations: %s", status.error_message().c_str());
     }
 
-    *orderby_supported = false; // response.orderbysupported();
-    *join_supported = false; // response.joinsupported();
-    *aggregation_supported = false; // response.aggregationsupported();
+    *orderby_supported = true; // response.orderbysupported();
+    *join_supported = true; // response.joinsupported();
+    *aggregation_supported = true; // response.aggregationsupported();
     elog(DEBUG3, "Order by: %d, Join: %d, Aggregation: %d", *orderby_supported, *join_supported, *aggregation_supported);
 
     std::vector<std::string> operations_supported;
@@ -852,7 +852,11 @@ char** get_table_definitions(das_opt* opts, const char* server_name, int* num_ta
 
 void get_query_estimate(das_opt* opts, const char* sql, double* rows, double* width)
 {
-    elog(ERROR, "TO DO");
+    // elog(ERROR, "TO DO");
+    *rows = 1000;
+    *width = 200;
+    
+
     // elog(WARNING, "Getting query estimate for DAS with URL: %s, id: %s, SQL: %s", opts->das_url, opts->das_id, sql);
 
     // auto client = QueryService::NewStub(grpc::CreateChannel(opts->das_url, grpc::InsecureChannelCredentials()));
@@ -872,7 +876,7 @@ void get_query_estimate(das_opt* opts, const char* sql, double* rows, double* wi
     // *rows = response.rows();
     // *width = response.bytes();
 
-    // elog(WARNING, "Got query estimate: rows: %f, width: %f", *rows, *width);
+    elog(WARNING, "Got query estimate: rows: %f, width: %f", *rows, *width);
 }
 
 SqlQueryIterator* sql_query_iterator_init(das_opt* opts, const char* sql, const char* plan_id)
